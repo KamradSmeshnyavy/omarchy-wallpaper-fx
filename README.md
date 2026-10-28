@@ -60,6 +60,16 @@ Changes against the stock `Background.qml` are marked `// fx:`.
 In [my dotfiles](https://github.com/KamradSmeshnyavy/dotfiles) the effect and its settings are picked in
 the Customizer overlay (Wallpaper FX, `p` replays).
 
+## With the Customizer
+
+[omarchy-customizer](https://github.com/KamradSmeshnyavy/omarchy-customizer) is one overlay (Super+Shift+T) with live preview for this plugin's settings and
+the rest of the look & feel: themes, wallpapers, Hyprland animations, transparency, blur, screen shaders.
+One command installs it and offers this plugin and the others:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/KamradSmeshnyavy/omarchy-customizer/main/install.sh | bash
+```
+
 ## License
 
 MIT. Based on `omarchy.background` from [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David

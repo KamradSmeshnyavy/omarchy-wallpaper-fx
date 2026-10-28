@@ -59,6 +59,16 @@ omarchy-shell background replay
 В [моих dotfiles](https://github.com/KamradSmeshnyavy/dotfiles) эффект и настройки выбираются в оверлее
 Customizer (Wallpaper FX, `p` — проиграть).
 
+## Вместе с Customizer
+
+[omarchy-customizer](https://github.com/KamradSmeshnyavy/omarchy-customizer) — один оверлей (Super+Shift+T) с живым предпросмотром для настроек этого
+плагина и всего остального оформления: темы, обои, анимации Hyprland, прозрачность, блюр, шейдеры экрана.
+Одна команда ставит его и предлагает этот плагин и остальные:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/KamradSmeshnyavy/omarchy-customizer/main/install.sh | bash
+```
+
 ## Лицензия
 
 MIT. Основано на `omarchy.background` из [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David
