@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "kamradsmeshnyavy.background",
-  "name": "My Background",
+  "name": "Wallpaper FX",
   "version": "1.0.0",
-  "author": "Omarchy",
-  "description": "Desktop background renderer with click handling and transitions",
+  "author": "KamradSmeshnyavy",
+  "description": "Omarchy background with 24 wallpaper transitions on a single custom shader",
   "kinds": [
     "service"
   ],
@@ -13,5 +13,6 @@
   },
   "omarchy": {
     "clonedFrom": "omarchy.background"
-  }
+  },
+  "homepage": "https://github.com/KamradSmeshnyavy/omarchy-wallpaper-fx"
 }
