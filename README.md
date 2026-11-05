@@ -30,7 +30,22 @@ omarchy-shell background replay
 
 Back to the stock background: `omarchy plugin enable omarchy.background`.
 
-Tested on Omarchy 4.0.6 with Quickshell 0.3.2.
+
+## Requirements
+
+Omarchy 4 (Quattro) with its shell. Tested on Omarchy 4.0.6 with Quickshell 0.3.2.
+
+- Nothing beyond Omarchy: the transitions are a single GLSL shader run by Quickshell.
+
+## Uninstall
+
+```sh
+omarchy plugin enable omarchy.background      # switch back to the stock one first
+omarchy plugin remove kamradsmeshnyavy.background
+omarchy restart shell
+```
+
+Your settings stay in `~/.config/omarchy/wallpaper-transition.json` — delete them by hand if you don't need them.
 
 ## Settings — `~/.config/omarchy/wallpaper-transition.json`
 

@@ -29,7 +29,22 @@ omarchy-shell background replay
 
 Вернуть стоковый фон: `omarchy plugin enable omarchy.background`.
 
-Проверено на Omarchy 4.0.6 и Quickshell 0.3.2.
+
+## Требования
+
+Omarchy 4 (Quattro) с его оболочкой. Проверено на Omarchy 4.0.6 и Quickshell 0.3.2.
+
+- Ничего, кроме Omarchy: переходы — один GLSL-шейдер в Quickshell.
+
+## Удаление
+
+```sh
+omarchy plugin enable omarchy.background      # сначала вернуть стоковый
+omarchy plugin remove kamradsmeshnyavy.background
+omarchy restart shell
+```
+
+Настройки остаются в `~/.config/omarchy/wallpaper-transition.json` — удалите их вручную, если не нужны.
 
 ## Настройки — `~/.config/omarchy/wallpaper-transition.json`
 

@@ -4,6 +4,7 @@
   "name": "Wallpaper FX",
   "version": "1.0.0",
   "author": "KamradSmeshnyavy",
+  "license": "MIT",
   "description": "Omarchy background with 24 wallpaper transitions on a single custom shader",
   "kinds": [
     "service"
