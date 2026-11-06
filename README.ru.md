@@ -7,6 +7,8 @@
 
 ![Переход](screenshots/transition.webp)
 
+<!-- Demo video: repo-videos/omarchy-wallpaper-fx.mp4 — drag it here when editing this file on GitHub -->
+
 `slant` (сток), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
 `hexagon`, `random`, `none`. Свои реализации по идеям swww и gl-transitions.

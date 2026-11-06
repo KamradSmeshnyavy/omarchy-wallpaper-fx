@@ -8,6 +8,8 @@ transition between wallpapers is new.
 
 ![Transition](screenshots/transition.webp)
 
+<!-- Demo video: repo-videos/omarchy-wallpaper-fx.mp4 — drag it here when editing this file on GitHub -->
+
 `slant` (stock), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
 `hexagon`, `random`, `none`. Own implementations of ideas from swww and gl-transitions.
