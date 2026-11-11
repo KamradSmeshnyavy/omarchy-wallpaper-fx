@@ -16,10 +16,28 @@ layout(std140, binding = 0) uniform buf {
     float aspect;    // ширина / высота
     float seed;      // случайность на каждый переход
     vec2 origin;     // центр круга и волн, 0..1
+    // contagion / outline (режимы 23, 24)
+    float cell;      // размер клетки фронта, px экрана
+    float glow;      // 0..1, сила вспышек и свечения фронта
+    float lineW;     // толщина линии контура, px
+    float hasMap;    // 1 — карты outline загружены
+    float sw;        // размер экрана, px
+    float sh;
+    float mapW;      // размер карт outline, тексели
+    float mapH;
+    vec4 cropTo;     // uv карты = xy + uv экрана * zw (обрезка новых обоев под экран)
+    vec4 ember;      // самый яркий цвет новой палитры — вспышки фронта
+    vec4 ink;        // самый светлый — линия контура
 };
 
 layout(binding = 1) uniform sampler2D fromTex;
 layout(binding = 2) uniform sampler2D toTex;
+// Карты outline (scripts/wallpaper-fx-outline), в пространстве новых обоев:
+//   fieldTex R — глубина внутри персонажа (0 на контуре), G — знаковое расстояние до контура
+//   (±16 px карты, 0.5 — сам контур, меньше — внутри), B — место на контуре (0 — не контур);
+//   growTex R/G — 16-битный порядок, в котором приходит всё снаружи персонажа.
+layout(binding = 3) uniform sampler2D fieldTex;
+layout(binding = 4) uniform sampler2D growTex;
 
 const float PI = 3.14159265;
 
@@ -52,6 +70,110 @@ float farthest(vec2 o) {
     vec2 a = vec2(aspect, 1.0);
     return max(max(length(o * a), length((o - vec2(1, 0)) * a)),
                max(length((o - vec2(0, 1)) * a), length((o - vec2(1, 1)) * a)));
+}
+
+// ───────────── contagion / outline ─────────────
+
+float hash2(vec2 p) { return fract(sin(dot(p, vec2(41.37, 289.13)) + seed * 917.3) * 24634.6345); }
+float fbm(vec2 p) { return noise(p) * 0.55 + noise(p * 2.13 + 3.7) * 0.3 + noise(p * 4.41 + 9.1) * 0.15; }
+float easeS(float x) { x = clamp(x, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); }
+// Зум «камеры» вокруг центра: z > 1 — чуть ближе.
+vec2 zoomed(vec2 uv, float z) { return 0.5 + (uv - 0.5) / z; }
+
+// Сетка колоний 3×2, по одной в каждой ячейке со случайным сдвигом: до ближайшей колонии
+// никогда не дальше диагонали ячейки, поэтому верхняя граница времени прихода известна заранее
+// и к концу перехода гарантированно перевёрнуто всё.
+const float LIFE = 0.06;   // сколько «горит» только что перевёрнутая клетка, в долях хода
+float contagionBound() { return 0.32 + 1.3 * length(vec2(aspect / 3.0, 0.5)) + 0.08; }
+float arrival(vec2 q) {
+    vec2 qa = q * vec2(aspect, 1.0);
+    vec2 warp = vec2(fbm(qa * 2.6 + seed * 17.0), fbm(qa * 2.6 + 31.0 + seed * 11.0)) - 0.5;
+    vec2 w = q + warp * vec2(0.09 / aspect, 0.09);
+    float rough = 0.7 + 0.6 * fbm(qa * 7.5 + seed * 5.0);
+    float a = 1e3;
+    for (int i = 0; i < 6; i++) {
+        vec2 g = vec2(float(i % 3), float(i / 3));
+        vec2 s = (g + 0.12 + 0.76 * vec2(hash2(g + 0.31), hash2(g + 7.77))) / vec2(3.0, 2.0);
+        float start = (i == int(seed * 6.0) % 6) ? 0.0 : 0.32 * hash2(g + 2.9);
+        a = min(a, start + length((w - s) * vec2(aspect, 1.0)) * rough);
+    }
+    return a / contagionBound();
+}
+
+vec3 contagion(vec2 uv) {
+    vec2 px = vec2(sw, sh);
+    vec2 grid = px / max(cell, 1.0);
+    vec2 id = floor(uv * grid);
+    float T = easeS(progress) * (1.0 + LIFE + 0.02) - 0.01;
+    float a = arrival((id + 0.5) / grid);
+    float flick = hash2(id);
+    vec3 hot = mix(ember.rgb, vec3(1.0), 0.2);
+    vec3 c;
+    if (a > T) {
+        c = A(uv).rgb;
+        float ahead = a - T;                       // искра: одинокая клетка перед фронтом
+        if (flick > 0.986 && ahead < 0.025 && T > 0.0)
+            c = mix(c, hot, (1.0 - ahead / 0.025) * 0.85 * glow);
+    } else {
+        c = B(zoomed(uv, 1.0 + 0.02 * (1.0 - easeS(progress)))).rgb;
+        float n = max(max(arrival((id + vec2(1.5, 0.5)) / grid), arrival((id + vec2(-0.5, 0.5)) / grid)),
+                      max(arrival((id + vec2(0.5, 1.5)) / grid), arrival((id + vec2(0.5, -0.5)) / grid)));
+        float life = clamp((T - a) / LIFE, 0.0, 1.0);
+        float burn = (1.0 - life) * (1.0 - life) * (n > T ? 1.0 : 0.5);
+        c = mix(c, hot, burn * (0.5 + 0.5 * flick) * 0.85 * glow);
+    }
+    // тонкое свечение вдоль фронта; sin(πp) — ровно ноль в начале и в конце
+    float as_ = arrival(uv);
+    return c + ember.rgb * 0.24 * glow * sin(PI * progress) * exp(-abs(as_ - T) / 0.007);
+}
+
+float grow16(vec2 muv) {
+    vec2 sz = vec2(mapW, mapH);
+    vec2 p = muv * sz - 0.5;
+    vec2 i = floor(p), f = p - i;
+    // байты интерполируются вручную: билинейный фильтр смешал бы старший и младший отдельно
+    vec4 v00 = texture(growTex, (clamp(i, vec2(0.0), sz - 1.0) + 0.5) / sz);
+    vec4 v10 = texture(growTex, (clamp(i + vec2(1, 0), vec2(0.0), sz - 1.0) + 0.5) / sz);
+    vec4 v01 = texture(growTex, (clamp(i + vec2(0, 1), vec2(0.0), sz - 1.0) + 0.5) / sz);
+    vec4 v11 = texture(growTex, (clamp(i + vec2(1, 1), vec2(0.0), sz - 1.0) + 0.5) / sz);
+    #define D16(v) ((floor(v.r * 255.0 + 0.5) * 256.0 + floor(v.g * 255.0 + 0.5)) / 65535.0)
+    return mix(mix(D16(v00), D16(v10), f.x), mix(D16(v01), D16(v11), f.x), f.y);
+}
+
+vec3 outline(vec2 uv) {
+    if (hasMap < 0.5) return contagion(uv);
+    float e = easeS(progress);
+    float zIn = 1.0 + 0.035 * (1.0 - e);           // персонаж приезжает чуть ближе фона
+    float zOut = 1.0 + 0.015 * (1.0 - e);
+    vec2 mIn = cropTo.xy + zoomed(uv, zIn) * cropTo.zw;
+    vec4 f = texture(fieldTex, mIn);
+    float sdPx = (f.g * 2.0 - 1.0) * 16.0 * sw * zIn / (mapW * cropTo.z);
+    float inside = clamp(0.5 - sdPx, 0.0, 1.0);
+
+    // сцена отступает: старые обои темнеют и сереют
+    float back = easeS(progress / 0.16) * (1.0 - easeS((progress - 0.9) / 0.1));
+    vec3 st = A(uv).rgb;
+    st = mix(st, vec3(dot(st, vec3(0.299, 0.587, 0.114))), 0.3 * back) * (1.0 - 0.22 * back);
+
+    // заливка и рост — теми же клетками, что у contagion, но решение по центру клетки
+    vec2 grid = vec2(sw, sh) / max(cell, 1.0);
+    vec2 cuv = (floor(uv * grid) + 0.5) / grid;
+    float Ti = easeS((progress - 0.30) / 0.30) * 1.03 - 0.015;
+    float depth = texture(fieldTex, cropTo.xy + zoomed(cuv, zIn) * cropTo.zw).r;
+    vec3 cIn = depth <= Ti ? B(zoomed(uv, zIn)).rgb : st;
+    float To = easeS((progress - 0.48) / 0.50) * 1.03 - 0.015;
+    float order = grow16(cropTo.xy + zoomed(cuv, zOut) * cropTo.zw);
+    vec3 cOut = order <= To ? B(zoomed(uv, zOut)).rgb : st;
+    vec3 c = mix(cOut, cIn, inside);
+
+    // линия: рисуется пером по месту на контуре, гаснет, когда персонаж залит
+    float drawn = easeS((progress - 0.03) / 0.36);
+    float fade = 1.0 - easeS((progress - 0.55) / 0.25);
+    if (f.b > 0.0 && f.b <= drawn && fade > 0.0) {
+        float core = clamp(lineW * 0.5 + 0.5 - abs(sdPx), 0.0, 1.0);
+        c = mix(c, ink.rgb, core * 0.8 * fade);
+    }
+    return c;
 }
 
 void main() {
@@ -166,6 +288,10 @@ void main() {
         vec2 center = (vec2(col + 0.5 - mod(row, 2.0) * 0.5, row + 0.5) / 14.0) / asp;
         float order = length((center - 0.5) * asp) / farthest(vec2(0.5)) * 0.7 + rand(cell + seed) * 0.3;
         c = mix(A(uv), B(uv), step(order, p * 1.02));
+    } else if (m == 23) {    // contagion — колонии клетками прогрызают старые обои
+        c = vec4(contagion(uv), 1.0);
+    } else if (m == 24) {    // outline — контур персонажа, заливка, мир растёт из него
+        c = vec4(outline(uv), 1.0);
     } else {                 // запасной — простое смешивание
         c = mix(A(uv), B(uv), p);
     }

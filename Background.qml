@@ -32,6 +32,8 @@ Item {
   //   duration  мс, easing — имя кривой (InOutCubic, OutExpo, …)
   //   angle     градусы для wipe / wave / slide, origin — center | cursor | random
   //   softness  ширина мягкого края (доля экрана)
+  //   contagion / outline: durationScene (мс), cell (px клетки), frontGlow (0..1), lineWidth (px),
+  //   outlineWait — сколько ждать карту outline (мс), потом contagion
   property var fxConfig: ({})
   readonly property string fxType: String(fxConfig.type || "slant")
   readonly property int fxDuration: Math.max(80, Math.min(5000, Number(fxConfig.duration) || 420))
@@ -39,6 +41,22 @@ Item {
   readonly property real fxAngle: Number(fxConfig.angle !== undefined ? fxConfig.angle : 0)
   readonly property real fxSoftness: Number(fxConfig.softness !== undefined ? fxConfig.softness : 0.02)
   readonly property string fxOrigin: String(fxConfig.origin || "center")
+  readonly property int fxDurationScene: Math.max(300, Math.min(8000, Number(fxConfig.durationScene) || 1900))
+  readonly property real fxCell: Math.max(2, Math.min(32, Number(fxConfig.cell) || 6))
+  readonly property real fxGlow: Math.max(0, Math.min(1, fxConfig.frontGlow !== undefined ? Number(fxConfig.frontGlow) : 0.9))
+  readonly property real fxLineWidth: Math.max(0.5, Math.min(6, Number(fxConfig.lineWidth) || 1.5))
+  readonly property int fxOutlineWait: Math.max(500, Math.min(30000, Number(fxConfig.outlineWait) || 8000))
+  readonly property bool fxScene: fxActive === "contagion" || fxActive === "outline"
+  // outline: карты для новых обоев (scripts/wallpaper-fx-outline). Пока ищем — переход ждёт.
+  readonly property string outlineScript: String(Qt.resolvedUrl("scripts/wallpaper-fx-outline")).replace(/^file:\/\//, "")
+  property bool outlinePending: false
+  property string outlineField: ""
+  property string outlineGrow: ""
+  property int outlineVersion: -1
+  property double outlineStarted: 0
+  // Карту пришлось резать (долго) или не дождались: после перехода дорезать папку в фоне.
+  property bool outlineWarmNeeded: false
+  property int fxPaletteTick: 0
   // Что играет текущий переход (random разрешается в конкретный эффект на старте).
   property string fxActive: "slant"
   property real fxSeed: 0
@@ -46,7 +64,7 @@ Item {
   property var fxCursor: null
   readonly property var fxEffects: ["slant", "fade", "wipe", "wave", "grow", "outer", "diamond", "clock",
     "blinds", "doors", "mosaic", "dissolve", "pixelize", "ripple", "swirl", "crosszoom", "slide", "zoom",
-    "glitch", "burn", "waterdrop", "hexagon"]
+    "glitch", "burn", "waterdrop", "hexagon", "contagion"]
 
   function fxEasingType(name) {
     var map = {
@@ -60,8 +78,22 @@ Item {
   }
 
   // Подготовить эффект к очередному переходу.
-  function fxPrepare() {
+  function fxPrepare(path) {
     fxActive = fxType === "random" ? fxEffects[Math.floor(Math.random() * fxEffects.length)] : fxType
+    outlineProc.running = false
+    outlineWaitTimer.stop()
+    outlinePending = false
+    outlineField = ""
+    outlineGrow = ""
+    if (fxActive === "outline" && path) {
+      outlineVersion = backgroundVersion
+      outlinePending = true
+      outlineStarted = Date.now()
+      outlineProc.out = ""
+      outlineProc.command = [outlineScript, "map", path]
+      outlineProc.running = true
+      outlineWaitTimer.restart()
+    }
     fxSeed = Math.random()
     fxRandomOrigin = Qt.point(0.15 + Math.random() * 0.7, 0.15 + Math.random() * 0.7)
     if (fxOrigin === "cursor" && !cursorProc.running) cursorProc.running = true
@@ -81,6 +113,41 @@ Item {
       }
     }
     onLoadFailed: root.fxConfig = ({})
+  }
+
+  // Карта есть в кэше — ответ мгновенный; нет — скрипт режет персонажа (секунды) или выходит
+  // с ошибкой (нет модели / нет персонажа). Не дождались — играем contagion, а скрипт пусть
+  // дорежет в кэш: в следующий раз эти обои получат outline.
+  // Пути приходят в stdout, а он может дочитаться и до, и после выхода процесса: успех решает
+  // stdout, провал — код выхода (1 — персонажа нет, 2 — модели нет).
+  Process {
+    id: outlineProc
+    property string out: ""
+    stdout: StdioCollector {
+      onStreamFinished: {
+        outlineProc.out = String(text || "").trim()
+        var parts = outlineProc.out.split(/\s+/)
+        if (parts.length >= 2 && root.outlinePending && root.outlineVersion === root.backgroundVersion)
+          root.outlineDone(parts[0], parts[1])
+      }
+    }
+    onExited: function(code) {
+      if (code !== 0 && root.outlinePending && root.outlineVersion === root.backgroundVersion)
+        root.outlineDone("", "")
+    }
+  }
+  Timer {
+    id: outlineWaitTimer
+    interval: root.fxOutlineWait
+    onTriggered: if (root.outlinePending) { root.outlineWarmNeeded = true; root.outlineDone("", "") }
+  }
+  function outlineDone(field, grow) {
+    outlineWaitTimer.stop()
+    if (field && Date.now() - outlineStarted > 1500) outlineWarmNeeded = true
+    outlineField = field
+    outlineGrow = grow
+    if (!field) fxActive = "contagion"
+    outlinePending = false
   }
 
   Process {
@@ -139,7 +206,7 @@ Item {
     revealAnimation.stop()
     finishingTransition = false
     // fx: эффект выбирается на каждый переход; none — без анимации.
-    fxPrepare()
+    fxPrepare(instant ? "" : path)
 
     if (instant || !displayedBackground || fxType === "none") {
       oldBackground = ""
@@ -188,6 +255,7 @@ Item {
     if (revealStartedVersion === backgroundVersion) return
     revealStartedVersion = backgroundVersion
     applyPendingTheme()
+    fxPaletteTick += 1
     revealAnimation.restart()
   }
 
@@ -262,9 +330,15 @@ Item {
     from: 0
     to: 1
     // fx: длительность и кривая из wallpaper-transition.json.
-    duration: root.fxDuration
-    easing.type: root.fxEasingType(root.fxEasing)
+    duration: root.fxScene ? root.fxDurationScene : root.fxDuration
+    easing.type: root.fxScene ? Easing.Linear : root.fxEasingType(root.fxEasing)
     onFinished: {
+      // outline: в фоне дорезать остальные обои этой папки, чтобы следующие переходы не ждали
+      // (без модели скрипт сразу выходит; уже вырезанные пропускает).
+      if (root.outlineWarmNeeded && root.currentBackground) {
+        root.outlineWarmNeeded = false
+        Quickshell.execDetached(["bash", "-c", '"$0" warm "$(dirname "$1")" >/dev/null 2>&1', root.outlineScript, root.currentBackground])
+      }
       if (root.incomingBackground) {
         root.displayedBackground = root.currentBackground || root.incomingBackground
         root.finishingTransition = true
@@ -300,12 +374,19 @@ Item {
 
       property bool maskReady: false
 
+      // outline ждёт свои карты: путь от скрипта и загруженные текстуры.
+      function fxReady() {
+        if (root.fxActive !== "outline") return true
+        if (root.outlinePending) return false
+        return root.outlineField === "" || fxView.mapReady || fxView.mapFailed
+      }
+
       function maybeStartReveal() {
         if (!root.incomingBackground || root.revealProgress !== 0 || maskReady) return
-        if (incomingFrame.status !== Image.Ready) return
+        if (incomingFrame.status !== Image.Ready || !fxReady()) return
         Qt.callLater(function() {
           if (!root.incomingBackground || root.revealProgress !== 0 || maskReady) return
-          if (incomingFrame.status !== Image.Ready) return
+          if (incomingFrame.status !== Image.Ready || !fxReady()) return
           root.startReveal(panel)
         })
       }
@@ -401,6 +482,7 @@ Item {
 
       // fx: переход — шейдер поверх старого и нового кадра.
       TransitionEffect {
+        id: fxView
         anchors.fill: parent
         visible: root.incomingBackground !== "" && panel.maskReady && root.revealProgress < 1
           && incomingFrame.status === Image.Ready
@@ -411,6 +493,13 @@ Item {
         angleDegrees: root.fxAngle
         softness: root.fxSoftness
         seed: root.fxSeed
+        cell: root.fxCell
+        glow: root.fxGlow
+        lineW: root.fxLineWidth
+        fieldPath: root.fxActive === "outline" ? root.outlineField : ""
+        growPath: root.fxActive === "outline" ? root.outlineGrow : ""
+        onMapReadyChanged: panel.maybeStartReveal()
+        onMapFailedChanged: panel.maybeStartReveal()
         origin: {
           if (root.fxOrigin === "random") return root.fxRandomOrigin
           var c = root.fxCursor
@@ -427,6 +516,8 @@ Item {
           panel.maskReady = false
           panel.maybeStartReveal()
         }
+        function onOutlinePendingChanged() { panel.maybeStartReveal() }
+        function onFxPaletteTickChanged() { fxView.capturePalette() }
       }
 
       MouseArea {

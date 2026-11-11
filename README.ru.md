@@ -2,7 +2,7 @@
 
 [🇬🇧 English](README.md)
 
-24 перехода обоев для [Omarchy](https://omarchy.org) на одном своём фрагментном шейдере. Клон стокового
+26 переходов обоев для [Omarchy](https://omarchy.org) на одном своём фрагментном шейдере. Клон стокового
 `omarchy.background`: клики и всё остальное как в стоке, новый только переход между обоями.
 
 ![Переход](screenshots/transition.webp)
@@ -11,7 +11,30 @@
 
 `slant` (сток), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
-`hexagon`, `random`, `none`. Свои реализации по идеям swww и gl-transitions.
+`hexagon`, `contagion`, `outline`, `random`, `none`. Свои реализации по идеям swww и gl-transitions.
+
+### Переходы-сцены: `contagion` и `outline`
+
+Два неторопливых эффекта (`durationScene`, по умолчанию 1,9 с) по мотивам переходов
+[diegoMalagrida/pocket-dots](https://github.com/diegoMalagrida/pocket-dots). Идея — оттуда, код написан заново.
+
+- **contagion**: колонии пикселей появляются в случайных местах и прогрызают старые обои по рваному
+  фронту. Только что перевёрнутая клетка вспыхивает самым ярким цветом новой темы, вдоль фронта идёт
+  тонкое свечение, изредка впереди проскакивает искра. Полностью процедурный: ни карт, ни Python.
+- **outline**: для обоев с персонажем. Сцена отступает, тонкая линия самым светлым цветом темы рисует
+  контур персонажа (два пера от верхней точки), персонаж заливается от линии, потом из него вырастает
+  остальной мир. Персонажа один раз на обои вырезает [BiRefNet](https://github.com/ZhengPeng7/BiRefNet)
+  через [rembg](https://github.com/danielgatis/rembg), карты лежат в `~/.cache/wallpaper-fx/outline/`. Без модели
+  или без явного персонажа переход играет как `contagion`.
+
+```sh
+scripts/wallpaper-fx-outline install   # venv в ~/.local/share/wallpaper-fx (~1 ГБ вместе с моделью)
+scripts/wallpaper-fx-outline warm      # заранее вырезать обои текущей темы
+scripts/wallpaper-fx-outline status
+```
+
+Первая смена на ещё не вырезанные обои ждёт вырезку (`outlineWait`, 8 с), а если не дождалась, играет
+contagion. После перехода, которому пришлось ждать вырезку, остальные обои этой папки дорезаются в фоне.
 
 ## Установка
 
@@ -37,6 +60,7 @@ omarchy-shell background replay
 Omarchy 4 (Quattro) с его оболочкой. Проверено на Omarchy 4.0.6 и Quickshell 0.3.2.
 
 - Ничего, кроме Omarchy: переходы — один GLSL-шейдер в Quickshell.
+- Только для `outline`: `uv` и ~1 ГБ на venv вырезки (по желанию, см. выше).
 
 ## Удаление
 
@@ -60,6 +84,11 @@ omarchy restart shell
 | `angle` | `0` | градусы для wipe / wave / slide |
 | `origin` | `center` | откуда круг и капля: center / cursor / random |
 | `softness` | `0.02` | ширина мягкого края |
+| `durationScene` | `1900` | мс, для contagion / outline (они всегда идут линейно, кривые — в шейдере) |
+| `cell` | `6` | px, размер клеток contagion / outline |
+| `frontGlow` | `0.9` | 0..1, вспышки и свечение фронта contagion |
+| `lineWidth` | `1.5` | px, линия outline |
+| `outlineWait` | `8000` | мс ожидания свежей вырезки, потом contagion |
 
 ## Правка шейдера
 
@@ -89,4 +118,5 @@ omarchy plugin add https://github.com/KamradSmeshnyavy/omarchy-customizer --enab
 ## Лицензия
 
 MIT. Основано на `omarchy.background` из [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David
-Heinemeier Hansson).
+Heinemeier Hansson). Переходы `contagion` / `outline` — по мотивам
+[pocket-dots](https://github.com/diegoMalagrida/pocket-dots) (GPL-3.0); код оттуда не брался.

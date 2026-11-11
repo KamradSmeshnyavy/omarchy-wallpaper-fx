@@ -2,7 +2,7 @@
 
 [🇷🇺 Русский](README.ru.md)
 
-24 wallpaper transitions for [Omarchy](https://omarchy.org), all drawn by a single custom fragment shader.
+26 wallpaper transitions for [Omarchy](https://omarchy.org), all drawn by a single custom fragment shader.
 A clone of the stock `omarchy.background`: click handling and everything else stay the same, only the
 transition between wallpapers is new.
 
@@ -12,7 +12,32 @@ transition between wallpapers is new.
 
 `slant` (stock), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
-`hexagon`, `random`, `none`. Own implementations of ideas from swww and gl-transitions.
+`hexagon`, `contagion`, `outline`, `random`, `none`. Own implementations of ideas from swww and gl-transitions.
+
+### Scene transitions: `contagion` and `outline`
+
+Two slower effects (`durationScene`, 1.9 s by default) after the transitions of
+[diegoMalagrida/pocket-dots](https://github.com/diegoMalagrida/pocket-dots). The idea is theirs, the code here is new.
+
+- **contagion**: pixel colonies land at random places and eat through the old wallpaper along ragged
+  fronts. A freshly flipped cell flashes in the brightest colour of the new theme, a thin glow rides the
+  front, and now and then a spark jumps ahead of it. It is fully procedural, with no maps and no Python.
+- **outline**: for wallpapers with a character. The scene steps back, a thin line in the theme's lightest
+  colour draws the character's outline (two pens from the top), the character fills in from that line,
+  then the rest of the world grows out of it. The character is cut out once per wallpaper by
+  [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) through [rembg](https://github.com/danielgatis/rembg), and the
+  maps are cached in `~/.cache/wallpaper-fx/outline/`. Without the model, or when there is no clear
+  character, the transition plays as `contagion`.
+
+```sh
+scripts/wallpaper-fx-outline install   # venv in ~/.local/share/wallpaper-fx (~1 GB with the model)
+scripts/wallpaper-fx-outline warm      # cut out the current theme's wallpapers ahead of time
+scripts/wallpaper-fx-outline status
+```
+
+The first change to a wallpaper that has not been cut out yet waits for the cut-out (`outlineWait`,
+8 s), then plays contagion if it is not ready. After a transition that had to wait for a cut-out, the rest of that folder is cut
+out in the background.
 
 ## Install
 
@@ -38,6 +63,7 @@ Back to the stock background: `omarchy plugin enable omarchy.background`.
 Omarchy 4 (Quattro) with its shell. Tested on Omarchy 4.0.6 with Quickshell 0.3.2.
 
 - Nothing beyond Omarchy: the transitions are a single GLSL shader run by Quickshell.
+- `outline` only: `uv` and ~1 GB for the cut-out venv (optional; see above).
 
 ## Uninstall
 
@@ -61,6 +87,11 @@ Read on the fly.
 | `angle` | `0` | degrees, for wipe / wave / slide |
 | `origin` | `center` | where circles and the water drop start: center / cursor / random |
 | `softness` | `0.02` | width of the soft edge |
+| `durationScene` | `1900` | ms, for contagion / outline (they always run linearly; their curves are in the shader) |
+| `cell` | `6` | px, size of the contagion / outline cells |
+| `frontGlow` | `0.9` | 0..1, contagion flashes and front glow |
+| `lineWidth` | `1.5` | px, outline line |
+| `outlineWait` | `8000` | ms to wait for a fresh cut-out before falling back to contagion |
 
 ## Hacking the shader
 
@@ -90,4 +121,5 @@ omarchy plugin add https://github.com/KamradSmeshnyavy/omarchy-customizer --enab
 ## License
 
 MIT. Based on `omarchy.background` from [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David
-Heinemeier Hansson).
+Heinemeier Hansson). The `contagion` / `outline` transitions are inspired by
+[pocket-dots](https://github.com/diegoMalagrida/pocket-dots) (GPL-3.0); no code was taken from it.

@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""wallpaper-fx-outline — карты для перехода outline (kamradsmeshnyavy.background).
+
+Переход outline рисует контур персонажа новых обоев, заливает персонажа от контура
+внутрь и выращивает из него остальной мир. Где персонаж — решает BiRefNet (через rembg);
+этот скрипт режет маску один раз на обои и складывает две карты в кэш:
+
+  <key>-field.png  R — глубина внутри персонажа (0 на контуре, 1 — самая глубокая точка)
+                   G — знаковое расстояние до контура: 0.5 ± d / 32, d в px карты (внутри — меньше)
+                   B — место на контуре, по которому линию ведут два «пера» от верхней точки
+                       (1..255; 0 — далеко от контура)
+  <key>-grow.png   R/G — порядок, в котором приходит всё снаружи (16 бит: R старший байт)
+
+Обе — RGB без альфы: Qt премультиплицирует текстуры с альфой и испортит числа.
+
+  wallpaper-fx-outline map IMG       пути к картам IMG (кэш по содержимому файла, иначе вырезает); exit 1 — персонажа нет,
+                                     exit 2 — модель не установлена
+  wallpaper-fx-outline warm [DIR…]   заранее вырезать папку (по умолчанию — обои текущей темы)
+  wallpaper-fx-outline install       venv ~/.local/share/wallpaper-fx/venv: rembg, onnxruntime-openvino,
+                                     opencv, numpy, pillow (~1 ГБ вместе с моделью)
+  wallpaper-fx-outline status        установлено ли и сколько карт в кэше
+
+Идея перехода — из diegoMalagrida/pocket-dots (wallfx); этот код написан заново.
+"""
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "wallpaper-fx", "outline")
+VENV = os.path.join(HOME, ".local", "share", "wallpaper-fx", "venv")
+VENV_PY = os.path.join(VENV, "bin", "python")
+CURRENT_BG = os.path.join(HOME, ".local", "state", "omarchy", "current", "background")
+MODEL = "birefnet-general-lite"
+VERSION = 1          # поменять, если меняется формат карт: старый кэш перестанет совпадать
+MAP_LONG = 1024      # длинная сторона карт; шейдер их интерполирует
+SD_RANGE = 16.0      # знаковое расстояние хранится в ±16 px карты
+EXTS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def key(path):
+    # По содержимому, не по пути и mtime: Omarchy при каждой смене темы заново копирует её обои
+    # в ~/.local/state/omarchy/current/theme/backgrounds с новым mtime — ключ по mtime каждый раз
+    # промахивался бы, а кэш бы рос.
+    h = hashlib.sha1(f"{VERSION}\0{MODEL}\0".encode())
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:20]
+
+
+def cached(path):
+    """(field, grow) — карты есть; False — уже проверено, персонажа нет; None — не резали."""
+    base = os.path.join(CACHE, key(path))
+    try:
+        with open(base + ".json", encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not meta.get("ok"):
+        return False
+    field, grow = base + "-field.png", base + "-grow.png"
+    return (field, grow) if os.path.exists(field) and os.path.exists(grow) else None
+
+
+def in_venv():
+    return os.path.realpath(sys.prefix) == os.path.realpath(VENV)
+
+
+def reexec_in_venv():
+    if in_venv():
+        return
+    if not os.path.exists(VENV_PY):
+        print("wallpaper-fx-outline: модель не установлена — wallpaper-fx-outline install", file=sys.stderr)
+        sys.exit(2)
+    os.execv(VENV_PY, [VENV_PY, os.path.abspath(__file__), *sys.argv[1:]])
+
+
+# ───────────────────────────── вырезка и карты ─────────────────────────────
+
+_session = None
+
+
+def mask_of(path):
+    """Мягкая маска персонажа 0..255 (uint8) в размере карты и сама картинка."""
+    global _session
+    import numpy as np
+    from PIL import Image
+    from rembg import new_session, remove
+    if _session is None:
+        _session = new_session(MODEL)
+    img = Image.open(path).convert("RGB")
+    s = MAP_LONG / max(img.size)
+    size = (max(1, round(img.size[0] * s)), max(1, round(img.size[1] * s)))
+    small = img.resize(size, Image.LANCZOS)
+    m = remove(small, session=_session, only_mask=True)
+    return np.asarray(m.convert("L"), dtype=np.uint8)
+
+
+def smooth_noise(rng, h, w, cells):
+    """Плавный шум 0..1: случайная сетка cells×cells, растянутая бикубически."""
+    import cv2
+    import numpy as np
+    gh, gw = max(2, round(cells * h / max(h, w))) + 1, max(2, round(cells * w / max(h, w))) + 1
+    g = rng.random((gh, gw)).astype(np.float32)
+    return np.clip(cv2.resize(g, (w, h), interpolation=cv2.INTER_CUBIC), 0.0, 1.0)
+
+
+def build_maps(soft):
+    """Из мягкой маски — (field RGB, grow RGB) или None, если чёткого персонажа нет."""
+    import cv2
+    import numpy as np
+    h, w = soft.shape
+    area = h * w
+    hard = (soft > 127).astype(np.uint8)
+    hard = cv2.morphologyEx(hard, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    hard = cv2.morphologyEx(hard, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    # мелкие острова (листья, искры, шум) персонажем не считаются
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(hard, 8)
+    keep = np.zeros(n, bool)
+    for i in range(1, n):
+        keep[i] = stats[i, cv2.CC_STAT_AREA] >= area * 0.004
+    hard = keep[labels].astype(np.uint8)
+    cover = hard.mean()
+    # нет персонажа: почти пусто, почти всё, маска «не уверена» или лежит по всей рамке
+    unsure = ((soft > 40) & (soft < 215)).sum() / max(1, hard.sum())
+    border = np.concatenate([hard[0], hard[-1], hard[:, 0], hard[:, -1]]).mean()
+    if not (0.03 <= cover <= 0.7) or unsure > 0.35 or border > 0.45:
+        return None
+
+    din = cv2.distanceTransform(hard, cv2.DIST_L2, 5)
+    dout = cv2.distanceTransform(1 - hard, cv2.DIST_L2, 5)
+    rng = np.random.default_rng(int(hard.sum()) & 0xFFFFFFFF)
+
+    # R: глубина внутри — от контура к самой толстой части, с лёгким шумом, чтобы заливка
+    # не шла идеальными концентрическими кольцами
+    depth = din / max(1.0, float(din.max()))
+    depth = np.where(hard > 0, np.clip(depth * 0.85 + smooth_noise(rng, h, w, 9) * 0.15 * (depth > 0.04), 0, 1), 0)
+
+    # G: знаковое расстояние, контур — посередине между пикселями
+    sd = np.where(hard > 0, -(din - 0.5), dout - 0.5)
+    g = np.clip(0.5 + sd / (2 * SD_RANGE), 0, 1)
+
+    # B: место на контуре. Каждый контур ведут два пера от его верхней точки навстречу друг
+    # другу: s / (L/2), где s — путь от верха в ближнюю сторону. Пиксели рядом с контуром
+    # берут значение ближайшей точки контура.
+    contours, _ = cv2.findContours(hard, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    pen = np.zeros((h, w), np.float32)
+    on = np.zeros((h, w), np.uint8)
+    for c in contours:
+        pts = c[:, 0, :]
+        if len(pts) < 12:
+            continue
+        seg = np.sqrt((np.diff(pts, axis=0, append=pts[:1]) ** 2).sum(1))
+        arc = np.concatenate([[0.0], np.cumsum(seg)[:-1]])
+        total = float(seg.sum())
+        top = int(np.argmin(pts[:, 1] * 4096 + pts[:, 0]))
+        s = (arc - arc[top]) % total
+        p = np.minimum(s, total - s) / (total / 2)
+        pen[pts[:, 1], pts[:, 0]] = np.maximum(p, 1e-3)
+        on[pts[:, 1], pts[:, 0]] = 1
+    if on.sum() == 0:
+        return None
+    _, lab = cv2.distanceTransformWithLabels(1 - on, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    ys, xs = np.nonzero(on)
+    lut = np.zeros(lab.max() + 1, np.float32)
+    lut[lab[ys, xs]] = pen[ys, xs]
+    b = np.where(np.abs(sd) < SD_RANGE, 1 + lut[lab] * 254, 0)
+
+    field = np.dstack([depth * 255, g * 255, b]).round().clip(0, 255).astype(np.uint8)
+
+    # grow: снаружи — расстояние от персонажа, растянутое шумом: мир растёт рваными языками,
+    # а не ровным ореолом. Внутри — 0 (там решает заливка).
+    rough = 0.65 + 0.7 * smooth_noise(rng, h, w, 7) * 0.7 + 0.3 * smooth_noise(rng, h, w, 23)
+    order = np.where(hard > 0, 0, dout * rough)
+    order = order / max(1e-6, float(order.max()))
+    q = (order * 65535 + 0.5).clip(0, 65535).astype(np.uint16)
+    grow = np.dstack([(q >> 8).astype(np.uint8), (q & 255).astype(np.uint8), np.zeros_like(q, np.uint8)])
+    return field, grow
+
+
+def write_atomic(path, writer):
+    tmp = path + ".tmp"
+    writer(tmp)
+    os.replace(tmp, path)
+
+
+def cut(path):
+    """Вырезать и закэшировать. (field, grow) или False."""
+    from PIL import Image
+    os.makedirs(CACHE, exist_ok=True)
+    base = os.path.join(CACHE, key(path))
+    maps = build_maps(mask_of(path))
+    meta = {"image": os.path.realpath(path), "ok": maps is not None, "version": VERSION}
+    if maps is not None:
+        for suffix, arr in (("-field.png", maps[0]), ("-grow.png", maps[1])):
+            write_atomic(base + suffix, lambda t, a=arr: Image.fromarray(a, "RGB").save(t, "PNG", compress_level=3))
+    # .json — последним: его наличие значит «готово»
+    write_atomic(base + ".json", lambda t: open(t, "w", encoding="utf-8").write(json.dumps(meta)))
+    return (base + "-field.png", base + "-grow.png") if maps is not None else False
+
+
+# ───────────────────────────── команды ─────────────────────────────
+
+def cmd_map(args):
+    if not args:
+        print("wallpaper-fx-outline map IMG", file=sys.stderr)
+        return 64
+    img = args[0]
+    if not os.path.isfile(img):
+        print(f"wallpaper-fx-outline: нет файла {img}", file=sys.stderr)
+        return 1
+    r = cached(img)                     # кэш читается системным python, без numpy и venv
+    if r is None:
+        reexec_in_venv()
+        r = cut(img)
+    if not r:
+        return 1
+    print(*r)
+    return 0
+
+
+def images_in(folder):
+    for name in sorted(os.listdir(folder)):
+        p = os.path.join(folder, name)
+        if name.lower().endswith(EXTS) and os.path.isfile(p):
+            yield p
+
+
+def cmd_warm(args):
+    folders = args or [os.path.dirname(os.path.realpath(CURRENT_BG))]
+    todo = [p for d in folders if os.path.isdir(d) for p in images_in(d) if cached(p) is None]
+    if not todo:
+        print("всё уже вырезано")
+        return 0
+    reexec_in_venv()
+    for p in todo:
+        try:
+            r = cut(p)
+            print(("outline   " if r else "contagion ") + os.path.basename(p), flush=True)
+        except Exception as e:          # один битый файл не должен останавливать остальные
+            print(f"ошибка    {os.path.basename(p)}: {e}", file=sys.stderr, flush=True)
+    return 0
+
+
+def cmd_install(_args):
+    uv = shutil.which("uv")
+    if not uv:
+        print("нужен uv: sudo pacman -S uv", file=sys.stderr)
+        return 1
+    os.makedirs(os.path.dirname(VENV), exist_ok=True)
+    if not os.path.exists(VENV_PY):
+        subprocess.run([uv, "venv", "-q", "--python", "3.12", VENV], check=True)
+    # onnxruntime-openvino — тот же onnxruntime, плюс GPU Intel; на других машинах — обычный
+    gpu = "onnxruntime-openvino" if _intel_gpu() else "onnxruntime"
+    subprocess.run([uv, "pip", "install", "-q", "--python", VENV_PY, "rembg", gpu,
+                    "opencv-python-headless", "numpy", "pillow"], check=True)
+    print("venv готов. Первая вырезка скачает модель (~210 МБ): wallpaper-fx-outline warm")
+    return 0
+
+
+def _intel_gpu():
+    try:
+        out = subprocess.run(["lspci"], capture_output=True, text=True).stdout
+    except OSError:
+        return False
+    return any("Intel" in l and ("VGA" in l or "Display" in l) for l in out.splitlines())
+
+
+def cmd_status(_args):
+    n_ok = n_no = 0
+    if os.path.isdir(CACHE):
+        for name in os.listdir(CACHE):
+            if name.endswith(".json"):
+                try:
+                    ok = json.load(open(os.path.join(CACHE, name), encoding="utf-8")).get("ok")
+                except (OSError, ValueError):
+                    continue
+                n_ok += bool(ok)
+                n_no += not ok
+    print(f"модель: {'установлена' if os.path.exists(VENV_PY) else 'нет (wallpaper-fx-outline install)'}")
+    print(f"кэш: {CACHE}\n  с персонажем: {n_ok}\n  без (contagion): {n_no}")
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    cmds = {"map": cmd_map, "warm": cmd_warm, "install": cmd_install, "status": cmd_status}
+    if argv[0] not in cmds:
+        print(f"wallpaper-fx-outline: нет команды «{argv[0]}»", file=sys.stderr)
+        return 64
+    return cmds[argv[0]](argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
