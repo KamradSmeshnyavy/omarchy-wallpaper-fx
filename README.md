@@ -22,22 +22,25 @@ Two slower effects (`durationScene`, 1.9 s by default) after the transitions of
 - **contagion**: pixel colonies land at random places and eat through the old wallpaper along ragged
   fronts. A freshly flipped cell flashes in the brightest colour of the new theme, a thin glow rides the
   front, and now and then a spark jumps ahead of it. It is fully procedural, with no maps and no Python.
-- **outline**: for wallpapers with a character. The scene steps back, a thin line in the theme's lightest
-  colour draws the character's outline (two pens from the top), the character fills in from that line,
-  then the rest of the world grows out of it. The character is cut out once per wallpaper by
-  [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) through [rembg](https://github.com/danielgatis/rembg), and the
-  maps are cached in `~/.cache/wallpaper-fx/outline/`. Without the model, or when there is no clear
-  character, the transition plays as `contagion`.
+- **outline**: a line is always drawn. The scene steps back, and a thin line draws the character's
+  outline with two pens from the top: light on dark parts of the picture, dark on light ones. The character fills
+  in from that line, then the rest of the world grows out of it. The character is cut out once per
+  wallpaper by [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) (onnxruntime). Until a wallpaper is cut out,
+  or when it has no clear character, the line traces the picture's own edges instead (Canny, built in under a
+  second) and the world grows out of those lines.
 
 ```sh
-scripts/wallpaper-fx-outline install   # venv in ~/.local/share/wallpaper-fx (~1 GB with the model)
-scripts/wallpaper-fx-outline warm      # cut out the current theme's wallpapers ahead of time
-scripts/wallpaper-fx-outline status
+scripts/wallpaper-fx-outline install   # venv in ~/.local/share/wallpaper-fx + BiRefNet-lite (~220 MB)
+scripts/wallpaper-fx-outline warm      # queue the current theme's wallpapers for cut-out
+scripts/wallpaper-fx-outline status    # device, queue, worker, cache
 ```
 
-The first change to a wallpaper that has not been cut out yet waits for the cut-out (`outlineWait`,
-8 s), then plays contagion if it is not ready. After a transition that had to wait for a cut-out, the rest of that folder is cut
-out in the background.
+`map` (called by the plugin on each change) answers at once: the character map if there is one, otherwise the
+edge map, and the wallpaper joins the cut-out queue. The queue is handled by **one** background worker for the
+whole system (flock), at `nice 19` / `ionice idle`, which loads the model once. It runs on the Intel **NPU**,
+then the **GPU**, then the CPU (2 threads), whichever works first. NPU and GPU need
+`sudo pacman -S intel-npu-driver intel-compute-runtime level-zero-loader`. On the CPU, a cut-out takes about 10 s
+and peaks at about 6 GB of RAM, because the model input is a fixed 1024².
 
 ## Install
 
@@ -63,7 +66,7 @@ Back to the stock background: `omarchy plugin enable omarchy.background`.
 Omarchy 4 (Quattro) with its shell. Tested on Omarchy 4.0.6 with Quickshell 0.3.2.
 
 - Nothing beyond Omarchy: the transitions are a single GLSL shader run by Quickshell.
-- `outline` only: `uv` and ~1 GB for the cut-out venv (optional; see above).
+- `outline` only: `opencv` + `numpy` for the edge maps (system python or the venv); the cut-out venv is optional.
 
 ## Uninstall
 
@@ -91,7 +94,7 @@ Read on the fly.
 | `cell` | `6` | px, size of the contagion / outline cells |
 | `frontGlow` | `0.9` | 0..1, contagion flashes and front glow |
 | `lineWidth` | `1.5` | px, outline line |
-| `outlineWait` | `8000` | ms to wait for a fresh cut-out before falling back to contagion |
+| `outlineWait` | `3000` | ms to wait for the map before falling back to contagion (normally under a second) |
 
 ## Hacking the shader
 

@@ -25,9 +25,11 @@ layout(std140, binding = 0) uniform buf {
     float sh;
     float mapW;      // размер карт outline, тексели
     float mapH;
+    float mapKind;   // 0 — контур персонажа (есть заливка), 1 — линии картинки (заливки нет)
     vec4 cropTo;     // uv карты = xy + uv экрана * zw (обрезка новых обоев под экран)
     vec4 ember;      // самый яркий цвет новой палитры — вспышки фронта
-    vec4 ink;        // самый светлый — линия контура
+    vec4 ink;        // самый светлый — линия на тёмном
+    vec4 inkDark;    // самый тёмный — линия на светлом
 };
 
 layout(binding = 1) uniform sampler2D fromTex;
@@ -76,6 +78,7 @@ float farthest(vec2 o) {
 
 float hash2(vec2 p) { return fract(sin(dot(p, vec2(41.37, 289.13)) + seed * 917.3) * 24634.6345); }
 float fbm(vec2 p) { return noise(p) * 0.55 + noise(p * 2.13 + 3.7) * 0.3 + noise(p * 4.41 + 9.1) * 0.15; }
+float fbm2(vec2 p) { return noise(p) * 0.65 + noise(p * 2.13 + 3.7) * 0.35; }
 float easeS(float x) { x = clamp(x, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); }
 // Зум «камеры» вокруг центра: z > 1 — чуть ближе.
 vec2 zoomed(vec2 uv, float z) { return 0.5 + (uv - 0.5) / z; }
@@ -87,7 +90,7 @@ const float LIFE = 0.06;   // сколько «горит» только что 
 float contagionBound() { return 0.32 + 1.3 * length(vec2(aspect / 3.0, 0.5)) + 0.08; }
 float arrival(vec2 q) {
     vec2 qa = q * vec2(aspect, 1.0);
-    vec2 warp = vec2(fbm(qa * 2.6 + seed * 17.0), fbm(qa * 2.6 + 31.0 + seed * 11.0)) - 0.5;
+    vec2 warp = vec2(fbm2(qa * 2.6 + seed * 17.0), fbm2(qa * 2.6 + 31.0 + seed * 11.0)) - 0.5;
     vec2 w = q + warp * vec2(0.09 / aspect, 0.09);
     float rough = 0.7 + 0.6 * fbm(qa * 7.5 + seed * 5.0);
     float a = 1e3;
@@ -108,6 +111,8 @@ vec3 contagion(vec2 uv) {
     float a = arrival((id + 0.5) / grid);
     float flick = hash2(id);
     vec3 hot = mix(ember.rgb, vec3(1.0), 0.2);
+    // гладкий фронт — для свечения и кромки (раньше кромку искали 4 лишними arrival у соседей)
+    float as_ = arrival(uv);
     vec3 c;
     if (a > T) {
         c = A(uv).rgb;
@@ -116,14 +121,12 @@ vec3 contagion(vec2 uv) {
             c = mix(c, hot, (1.0 - ahead / 0.025) * 0.85 * glow);
     } else {
         c = B(zoomed(uv, 1.0 + 0.02 * (1.0 - easeS(progress)))).rgb;
-        float n = max(max(arrival((id + vec2(1.5, 0.5)) / grid), arrival((id + vec2(-0.5, 0.5)) / grid)),
-                      max(arrival((id + vec2(0.5, 1.5)) / grid), arrival((id + vec2(0.5, -0.5)) / grid)));
         float life = clamp((T - a) / LIFE, 0.0, 1.0);
-        float burn = (1.0 - life) * (1.0 - life) * (n > T ? 1.0 : 0.5);
+        float edge = 1.0 - smoothstep(0.0, LIFE * 0.4, T - as_);
+        float burn = (1.0 - life) * (1.0 - life) * (0.5 + 0.5 * edge);
         c = mix(c, hot, burn * (0.5 + 0.5 * flick) * 0.85 * glow);
     }
     // тонкое свечение вдоль фронта; sin(πp) — ровно ноль в начале и в конце
-    float as_ = arrival(uv);
     return c + ember.rgb * 0.24 * glow * sin(PI * progress) * exp(-abs(as_ - T) / 0.007);
 }
 
@@ -148,7 +151,7 @@ vec3 outline(vec2 uv) {
     vec2 mIn = cropTo.xy + zoomed(uv, zIn) * cropTo.zw;
     vec4 f = texture(fieldTex, mIn);
     float sdPx = (f.g * 2.0 - 1.0) * 16.0 * sw * zIn / (mapW * cropTo.z);
-    float inside = clamp(0.5 - sdPx, 0.0, 1.0);
+    float inside = mapKind < 0.5 ? clamp(0.5 - sdPx, 0.0, 1.0) : 0.0;
 
     // сцена отступает: старые обои темнеют и сереют
     float back = easeS(progress / 0.16) * (1.0 - easeS((progress - 0.9) / 0.1));
@@ -170,8 +173,16 @@ vec3 outline(vec2 uv) {
     float drawn = easeS((progress - 0.03) / 0.36);
     float fade = 1.0 - easeS((progress - 0.55) / 0.25);
     if (f.b > 0.0 && f.b <= drawn && fade > 0.0) {
-        float core = clamp(lineW * 0.5 + 0.5 - abs(sdPx), 0.0, 1.0);
-        c = mix(c, ink.rgb, core * 0.8 * fade);
+        // Цвет — по яркости сцены под линией: светлая на тёмном, тёмная на светлом, и тонкая
+        // тень противоположного тона рядом. Так линию видно на любых обоях.
+        float w = max(lineW, 1.25) * 0.5;
+        float core = clamp(w + 0.5 - abs(sdPx), 0.0, 1.0);
+        float halo = clamp(w + 1.5 - abs(sdPx), 0.0, 1.0) - core;
+        bool light = dot(st, vec3(0.299, 0.587, 0.114)) > 0.55;
+        vec3 pen = light ? inkDark.rgb : ink.rgb;
+        vec3 shade = light ? ink.rgb : inkDark.rgb;
+        c = mix(c, shade, halo * 0.45 * fade);
+        c = mix(c, pen, core * 0.9 * fade);
     }
     return c;
 }

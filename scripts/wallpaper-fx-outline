@@ -1,27 +1,38 @@
 #!/usr/bin/env python3
 """wallpaper-fx-outline — карты для перехода outline (kamradsmeshnyavy.background).
 
-Переход outline рисует контур персонажа новых обоев, заливает персонажа от контура
-внутрь и выращивает из него остальной мир. Где персонаж — решает BiRefNet (через rembg);
-этот скрипт режет маску один раз на обои и складывает две карты в кэш:
+Переход outline рисует линии новых обоев, а мир вырастает из них. Карт два вида:
 
-  <key>-field.png  R — глубина внутри персонажа (0 на контуре, 1 — самая глубокая точка)
-                   G — знаковое расстояние до контура: 0.5 ± d / 32, d в px карты (внутри — меньше)
-                   B — место на контуре, по которому линию ведут два «пера» от верхней точки
-                       (1..255; 0 — далеко от контура)
-  <key>-grow.png   R/G — порядок, в котором приходит всё снаружи (16 бит: R старший байт)
+  char  контур персонажа: его вырезает BiRefNet (onnxruntime). Линия идёт по силуэту,
+        персонаж заливается от контура внутрь, потом мир растёт наружу.
+  edge  линии самой картинки (Canny): строится меньше чем за секунду, нужна для обоев,
+        которые ещё не вырезаны или на которых нет явного персонажа. Заливки нет,
+        мир растёт от линий.
 
-Обе — RGB без альфы: Qt премультиплицирует текстуры с альфой и испортит числа.
+`map` отвечает сразу: есть карта персонажа — она, иначе карта линий, а обои ставятся
+в очередь на вырезку. Очередь разбирает ОДИН фоновый воркер на всю систему (flock),
+под nice 19 и ionice idle; модель он грузит один раз.
 
-  wallpaper-fx-outline map IMG       пути к картам IMG (кэш по содержимому файла, иначе вырезает); exit 1 — персонажа нет,
-                                     exit 2 — модель не установлена
-  wallpaper-fx-outline warm [DIR…]   заранее вырезать папку (по умолчанию — обои текущей темы)
-  wallpaper-fx-outline install       venv ~/.local/share/wallpaper-fx/venv: rembg, onnxruntime-openvino,
-                                     opencv, numpy, pillow (~1 ГБ вместе с моделью)
-  wallpaper-fx-outline status        установлено ли и сколько карт в кэше
+Файлы в ~/.cache/wallpaper-fx/outline, все RGB без альфы (Qt премультиплицирует альфу и
+портит числа):
+  <key>[-edge]-field.png  R — глубина внутри персонажа (у edge 0), G — расстояние до линии
+                          0.5 ± d/32 (d в px карты, внутри персонажа меньше 0.5),
+                          B — место на линии, по которому её ведут «перья» (1..255; 0 — далеко)
+  <key>[-edge]-grow.png   R/G — 16-битный порядок, в котором приходит всё остальное
+  <key>.json              персонаж проверен: ok true / false
+
+  wallpaper-fx-outline map IMG       «field grow char|edge»; exit 2 — не на чем строить (нет cv2 и venv)
+  wallpaper-fx-outline warm [DIR…]   поставить невырезанные обои в очередь (по умолчанию — текущей темы)
+  wallpaper-fx-outline status        устройство, очередь, воркер, кэш
+  wallpaper-fx-outline install       venv ~/.local/share/wallpaper-fx/venv (onnxruntime-openvino, opencv, numpy,
+                                     pillow) и модель BiRefNet-lite (~220 МБ)
+
+Ускорение — OpenVINO: NPU → GPU → CPU (первое, что заработало, запоминается). NPU и GPU
+Intel требуют пакеты intel-npu-driver, intel-compute-runtime и level-zero-loader.
 
 Идея перехода — из diegoMalagrida/pocket-dots (wallfx); этот код написан заново.
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -30,21 +41,32 @@ import subprocess
 import sys
 
 HOME = os.path.expanduser("~")
-CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "wallpaper-fx", "outline")
-VENV = os.path.join(HOME, ".local", "share", "wallpaper-fx", "venv")
+ROOT = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "wallpaper-fx")
+CACHE = os.path.join(ROOT, "outline")
+OV_CACHE = os.path.join(ROOT, "ov")
+DEVICE_FILE = os.path.join(ROOT, "device")
+QUEUE = os.path.join(CACHE, "queue")
+QUEUE_LOCK = os.path.join(CACHE, "queue.lock")
+WORKER_LOCK = os.path.join(CACHE, "worker.lock")
+SHARE = os.path.join(HOME, ".local", "share", "wallpaper-fx")
+VENV = os.path.join(SHARE, "venv")
 VENV_PY = os.path.join(VENV, "bin", "python")
 CURRENT_BG = os.path.join(HOME, ".local", "state", "omarchy", "current", "background")
 MODEL = "birefnet-general-lite"
-VERSION = 1          # поменять, если меняется формат карт: старый кэш перестанет совпадать
+MODEL_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx"
+MODEL_PATHS = [os.path.join(SHARE, MODEL + ".onnx"),
+               os.path.join(HOME, ".local", "share", "rembg", "models", MODEL, MODEL + ".onnx")]
+VERSION = 1          # формат карт персонажа: поменять — старый кэш перестанет совпадать
+EDGE_VERSION = 1     # формат карт линий
 MAP_LONG = 1024      # длинная сторона карт; шейдер их интерполирует
-SD_RANGE = 16.0      # знаковое расстояние хранится в ±16 px карты
+SD_RANGE = 16.0      # расстояние до линии хранится в ±16 px карты
 EXTS = (".jpg", ".jpeg", ".png", ".webp")
+DEVICES = ("NPU", "GPU", "CPU")
 
 
 def key(path):
     # По содержимому, не по пути и mtime: Omarchy при каждой смене темы заново копирует её обои
-    # в ~/.local/state/omarchy/current/theme/backgrounds с новым mtime — ключ по mtime каждый раз
-    # промахивался бы, а кэш бы рос.
+    # в ~/.local/state/omarchy/current/theme/backgrounds с новым mtime.
     h = hashlib.sha1(f"{VERSION}\0{MODEL}\0".encode())
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -52,9 +74,9 @@ def key(path):
     return h.hexdigest()[:20]
 
 
-def cached(path):
-    """(field, grow) — карты есть; False — уже проверено, персонажа нет; None — не резали."""
-    base = os.path.join(CACHE, key(path))
+def char_state(k):
+    """(field, grow) — персонаж есть; False — проверено, персонажа нет; None — не проверяли."""
+    base = os.path.join(CACHE, k)
     try:
         with open(base + ".json", encoding="utf-8") as f:
             meta = json.load(f)
@@ -62,46 +84,44 @@ def cached(path):
         return None
     if not meta.get("ok"):
         return False
-    field, grow = base + "-field.png", base + "-grow.png"
-    return (field, grow) if os.path.exists(field) and os.path.exists(grow) else None
+    pair = (base + "-field.png", base + "-grow.png")
+    return pair if all(map(os.path.exists, pair)) else None
+
+
+def edge_pair(k):
+    base = os.path.join(CACHE, f"{k}-edge{EDGE_VERSION}")
+    return base + "-field.png", base + "-grow.png"
 
 
 def in_venv():
     return os.path.realpath(sys.prefix) == os.path.realpath(VENV)
 
 
-def reexec_in_venv():
+def reexec_in_venv(why):
     if in_venv():
         return
     if not os.path.exists(VENV_PY):
-        print("wallpaper-fx-outline: модель не установлена — wallpaper-fx-outline install", file=sys.stderr)
+        print(f"wallpaper-fx-outline: {why} — нужен venv: wallpaper-fx-outline install", file=sys.stderr)
         sys.exit(2)
     os.execv(VENV_PY, [VENV_PY, os.path.abspath(__file__), *sys.argv[1:]])
 
 
-# ───────────────────────────── вырезка и карты ─────────────────────────────
+def write_atomic(path, writer):
+    tmp = f"{path}.{os.getpid()}.tmp"
+    writer(tmp)
+    os.replace(tmp, path)
 
-_session = None
+
+def save_png(path, arr):
+    import cv2
+    # cv2 пишет BGR: переставляем каналы, чтобы в файле R остался R
+    write_atomic(path, lambda t: cv2.imwrite(t + ".png", arr[..., ::-1]) and os.replace(t + ".png", t))
 
 
-def mask_of(path):
-    """Мягкая маска персонажа 0..255 (uint8) в размере карты и сама картинка."""
-    global _session
-    import numpy as np
-    from PIL import Image
-    from rembg import new_session, remove
-    if _session is None:
-        _session = new_session(MODEL)
-    img = Image.open(path).convert("RGB")
-    s = MAP_LONG / max(img.size)
-    size = (max(1, round(img.size[0] * s)), max(1, round(img.size[1] * s)))
-    small = img.resize(size, Image.LANCZOS)
-    m = remove(small, session=_session, only_mask=True)
-    return np.asarray(m.convert("L"), dtype=np.uint8)
-
+# ───────────────────────────── общие куски карт ─────────────────────────────
 
 def smooth_noise(rng, h, w, cells):
-    """Плавный шум 0..1: случайная сетка cells×cells, растянутая бикубически."""
+    """Плавный шум 0..1: случайная сетка, растянутая бикубически."""
     import cv2
     import numpy as np
     gh, gw = max(2, round(cells * h / max(h, w))) + 1, max(2, round(cells * w / max(h, w))) + 1
@@ -109,57 +129,25 @@ def smooth_noise(rng, h, w, cells):
     return np.clip(cv2.resize(g, (w, h), interpolation=cv2.INTER_CUBIC), 0.0, 1.0)
 
 
-def build_maps(soft):
-    """Из мягкой маски — (field RGB, grow RGB) или None, если чёткого персонажа нет."""
+def pen_channel(contours, h, w, near):
+    """B: место на линии. Замкнутый контур ведут два пера от верхней точки навстречу друг
+    другу, открытый — одно перо от верхнего конца. Пиксели в полосе `near` берут значение
+    ближайшей точки линии. Возвращает (b, on) или None, если линий нет."""
     import cv2
     import numpy as np
-    h, w = soft.shape
-    area = h * w
-    hard = (soft > 127).astype(np.uint8)
-    hard = cv2.morphologyEx(hard, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    hard = cv2.morphologyEx(hard, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    # мелкие острова (листья, искры, шум) персонажем не считаются
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(hard, 8)
-    keep = np.zeros(n, bool)
-    for i in range(1, n):
-        keep[i] = stats[i, cv2.CC_STAT_AREA] >= area * 0.004
-    hard = keep[labels].astype(np.uint8)
-    cover = hard.mean()
-    # нет персонажа: почти пусто, почти всё, маска «не уверена» или лежит по всей рамке
-    unsure = ((soft > 40) & (soft < 215)).sum() / max(1, hard.sum())
-    border = np.concatenate([hard[0], hard[-1], hard[:, 0], hard[:, -1]]).mean()
-    if not (0.03 <= cover <= 0.7) or unsure > 0.35 or border > 0.45:
-        return None
-
-    din = cv2.distanceTransform(hard, cv2.DIST_L2, 5)
-    dout = cv2.distanceTransform(1 - hard, cv2.DIST_L2, 5)
-    rng = np.random.default_rng(int(hard.sum()) & 0xFFFFFFFF)
-
-    # R: глубина внутри — от контура к самой толстой части, с лёгким шумом, чтобы заливка
-    # не шла идеальными концентрическими кольцами
-    depth = din / max(1.0, float(din.max()))
-    depth = np.where(hard > 0, np.clip(depth * 0.85 + smooth_noise(rng, h, w, 9) * 0.15 * (depth > 0.04), 0, 1), 0)
-
-    # G: знаковое расстояние, контур — посередине между пикселями
-    sd = np.where(hard > 0, -(din - 0.5), dout - 0.5)
-    g = np.clip(0.5 + sd / (2 * SD_RANGE), 0, 1)
-
-    # B: место на контуре. Каждый контур ведут два пера от его верхней точки навстречу друг
-    # другу: s / (L/2), где s — путь от верха в ближнюю сторону. Пиксели рядом с контуром
-    # берут значение ближайшей точки контура.
-    contours, _ = cv2.findContours(hard, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
     pen = np.zeros((h, w), np.float32)
     on = np.zeros((h, w), np.uint8)
-    for c in contours:
+    for c, closed in contours:
         pts = c[:, 0, :]
-        if len(pts) < 12:
-            continue
-        seg = np.sqrt((np.diff(pts, axis=0, append=pts[:1]) ** 2).sum(1))
+        seg = np.sqrt((np.diff(pts, axis=0, append=pts[:1] if closed else pts[-1:]) ** 2).sum(1))
         arc = np.concatenate([[0.0], np.cumsum(seg)[:-1]])
-        total = float(seg.sum())
-        top = int(np.argmin(pts[:, 1] * 4096 + pts[:, 0]))
-        s = (arc - arc[top]) % total
-        p = np.minimum(s, total - s) / (total / 2)
+        total = max(float(seg.sum()), 1e-3)
+        if closed:
+            top = int(np.argmin(pts[:, 1] * 4096 + pts[:, 0]))
+            s = (arc - arc[top]) % total
+            p = np.minimum(s, total - s) / (total / 2)
+        else:
+            p = arc / total if pts[0, 1] <= pts[-1, 1] else 1 - arc / total
         pen[pts[:, 1], pts[:, 0]] = np.maximum(p, 1e-3)
         on[pts[:, 1], pts[:, 0]] = 1
     if on.sum() == 0:
@@ -168,58 +156,305 @@ def build_maps(soft):
     ys, xs = np.nonzero(on)
     lut = np.zeros(lab.max() + 1, np.float32)
     lut[lab[ys, xs]] = pen[ys, xs]
-    b = np.where(np.abs(sd) < SD_RANGE, 1 + lut[lab] * 254, 0)
+    return np.where(near, 1 + lut[lab] * 254, 0), on
 
-    field = np.dstack([depth * 255, g * 255, b]).round().clip(0, 255).astype(np.uint8)
 
-    # grow: снаружи — расстояние от персонажа, растянутое шумом: мир растёт рваными языками,
-    # а не ровным ореолом. Внутри — 0 (там решает заливка).
-    rough = 0.65 + 0.7 * smooth_noise(rng, h, w, 7) * 0.7 + 0.3 * smooth_noise(rng, h, w, 23)
-    order = np.where(hard > 0, 0, dout * rough)
+def grow_channel(dist, rng, inside=None):
+    """Порядок прихода снаружи: расстояние, растянутое шумом (рваные языки, а не ореол)."""
+    import numpy as np
+    h, w = dist.shape
+    rough = 0.6 + 0.5 * smooth_noise(rng, h, w, 7) + 0.3 * smooth_noise(rng, h, w, 23)
+    order = dist * rough
+    if inside is not None:
+        order = np.where(inside, 0, order)
     order = order / max(1e-6, float(order.max()))
     q = (order * 65535 + 0.5).clip(0, 65535).astype(np.uint16)
-    grow = np.dstack([(q >> 8).astype(np.uint8), (q & 255).astype(np.uint8), np.zeros_like(q, np.uint8)])
-    return field, grow
+    return np.dstack([(q >> 8).astype(np.uint8), (q & 255).astype(np.uint8), np.zeros_like(q, np.uint8)])
 
 
-def write_atomic(path, writer):
-    tmp = path + ".tmp"
-    writer(tmp)
-    os.replace(tmp, path)
+def load_small(path):
+    """Картинка RGB uint8 с длинной стороной MAP_LONG."""
+    import cv2
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"не читается: {path}")
+    h, w = img.shape[:2]
+    s = MAP_LONG / max(h, w)
+    img = cv2.resize(img, (max(1, round(w * s)), max(1, round(h * s))), interpolation=cv2.INTER_AREA)
+    return img[..., ::-1].copy()
 
 
-def cut(path):
-    """Вырезать и закэшировать. (field, grow) или False."""
-    from PIL import Image
-    os.makedirs(CACHE, exist_ok=True)
-    base = os.path.join(CACHE, key(path))
-    maps = build_maps(mask_of(path))
-    meta = {"image": os.path.realpath(path), "ok": maps is not None, "version": VERSION}
+# ───────────────────────────── карта линий (быстрая) ─────────────────────────────
+
+def build_edge_maps(rgb):
+    import cv2
+    import numpy as np
+    h, w = rgb.shape[:2]
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.bilateralFilter(gray, 7, 40, 7)
+    v = float(np.median(gray))
+    edges = cv2.Canny(gray, max(10.0, 0.66 * v), max(40.0, min(255.0, 1.33 * v)))
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    # findContours обходит линию в 1 px с двух сторон — получается замкнутая петля; длина ×2
+    good = sorted((c for c in contours if cv2.arcLength(c, True) >= 120), key=lambda c: -cv2.arcLength(c, True))[:40]
+    if not good:
+        # совсем ровная картинка: рамка по краю, чтобы линия была всегда
+        m = round(min(h, w) * 0.06)
+        rect = np.array([[[m, m]], [[w - 1 - m, m]], [[w - 1 - m, h - 1 - m]], [[m, h - 1 - m]]], np.int32)
+        frame = np.zeros((h, w), np.uint8)
+        cv2.polylines(frame, [rect], True, 1, 1)
+        good, _ = cv2.findContours(frame, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    on = np.zeros((h, w), np.uint8)
+    cv2.drawContours(on, good, -1, 1, 1)
+    dist = cv2.distanceTransform(1 - on, cv2.DIST_L2, 5)
+    r = pen_channel([(c, True) for c in good], h, w, dist < SD_RANGE)
+    b = r[0]
+    g = np.clip(0.5 + dist / (2 * SD_RANGE), 0, 1)
+    field = np.dstack([np.zeros_like(g), g * 255, b]).round().clip(0, 255).astype(np.uint8)
+    rng = np.random.default_rng(int(on.sum()) & 0xFFFFFFFF)
+    return field, grow_channel(dist, rng)
+
+
+def edge_maps(img, k):
+    field_p, grow_p = edge_pair(k)
+    if not (os.path.exists(field_p) and os.path.exists(grow_p)):
+        os.makedirs(CACHE, exist_ok=True)
+        field, grow = build_edge_maps(load_small(img))
+        save_png(field_p, field)
+        save_png(grow_p, grow)
+    return field_p, grow_p
+
+
+# ───────────────────────────── вырезка персонажа ─────────────────────────────
+
+def device_ready(device):
+    import glob
+    if device == "CPU":
+        return True
+    libs = lambda *pats: any(glob.glob(os.path.join(d, p)) for d in ("/usr/lib", "/usr/lib64") for p in pats)
+    if not libs("libze_loader.so*"):
+        return False
+    if device == "NPU":
+        return os.path.exists("/dev/accel/accel0") and libs("libze_intel_npu.so*", "libze_intel_vpu.so*")
+    return libs("libze_intel_gpu.so*")
+
+
+class Cutter:
+    """BiRefNet через onnxruntime. Устройство: запомненное, иначе NPU → GPU → CPU."""
+
+    def __init__(self):
+        self.session = None
+        self.device = None
+
+    def model_path(self):
+        for p in MODEL_PATHS:
+            if os.path.exists(p):
+                return p
+        os.makedirs(SHARE, exist_ok=True)
+        import urllib.request
+        print("скачиваю модель BiRefNet-lite (~220 МБ)…", file=sys.stderr, flush=True)
+        write_atomic(MODEL_PATHS[0], lambda t: urllib.request.urlretrieve(MODEL_URL, t))
+        return MODEL_PATHS[0]
+
+    def _open(self, device):
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        if device == "CPU":
+            # тихо: два потока, остальные ядра остаются системе
+            opts.intra_op_num_threads = 2
+            opts.inter_op_num_threads = 1
+            opts.enable_cpu_mem_arena = False      # иначе пик (~3 ГБ) остаётся занят между обоями
+            providers = ["CPUExecutionProvider"]
+        else:
+            os.makedirs(OV_CACHE, exist_ok=True)
+            providers = [("OpenVINOExecutionProvider", {"device_type": device, "cache_dir": OV_CACHE}),
+                         "CPUExecutionProvider"]
+        s = ort.InferenceSession(self.model_path(), sess_options=opts, providers=providers)
+        if device != "CPU" and s.get_providers()[0] != "OpenVINOExecutionProvider":
+            raise RuntimeError(f"{device}: OpenVINO не взялся")
+        return s
+
+    def _candidates(self):
+        try:
+            saved = open(DEVICE_FILE, encoding="utf-8").read().strip()
+        except OSError:
+            saved = ""
+        order = [saved] + [d for d in DEVICES if d != saved] if saved in DEVICES else list(DEVICES)
+        # Без драйвера onnxruntime всё равно соберёт сессию (на CPU, со всеми потоками и
+        # полной памятью) — поэтому недоступные устройства отсекаем заранее, по библиотекам.
+        return [d for d in order if device_ready(d)]
+
+    def mask(self, rgb):
+        """Мягкая маска 0..255 размера rgb (как у BiRefNet-сессии rembg: 1024², ImageNet, sigmoid, min-max)."""
+        import cv2
+        import numpy as np
+        x = cv2.resize(rgb, (1024, 1024), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
+        x /= max(float(x.max()), 1e-6)
+        x = (x - np.array([0.485, 0.456, 0.406], np.float32)) / np.array([0.229, 0.224, 0.225], np.float32)
+        x = x.transpose(2, 0, 1)[None]
+        tries = [self.device] if self.session else self._candidates()
+        for dev in tries:
+            try:
+                if self.session is None:
+                    self.session = self._open(dev)
+                    self.device = dev
+                out = self.session.run(None, {self.session.get_inputs()[0].name: x})[0][0, 0]
+                break
+            except Exception as e:                     # устройство не завелось — следующее
+                print(f"{dev}: {str(e).splitlines()[0][:160]}", file=sys.stderr, flush=True)
+                self.session = None
+                self.device = None
+        else:
+            raise RuntimeError("ни одно устройство не сработало")
+        write_atomic(DEVICE_FILE, lambda t: open(t, "w", encoding="utf-8").write(self.device + "\n"))
+        p = 1 / (1 + np.exp(-out))
+        p = (p - p.min()) / max(float(p.max() - p.min()), 1e-6)
+        m = (p * 255).astype(np.uint8)
+        return cv2.resize(m, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+
+
+def build_char_maps(soft):
+    """Из мягкой маски — (field, grow) или None, если явного персонажа нет."""
+    import cv2
+    import numpy as np
+    h, w = soft.shape
+    area = h * w
+    hard = (soft > 127).astype(np.uint8)
+    hard = cv2.morphologyEx(hard, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    hard = cv2.morphologyEx(hard, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(hard, 8)
+    keep = np.zeros(n, bool)
+    for i in range(1, n):
+        keep[i] = stats[i, cv2.CC_STAT_AREA] >= area * 0.004       # острова-крошки не персонаж
+    hard = keep[labels].astype(np.uint8)
+    cover = hard.mean()
+    unsure = ((soft > 40) & (soft < 215)).sum() / max(1, hard.sum())
+    border = np.concatenate([hard[0], hard[-1], hard[:, 0], hard[:, -1]]).mean()
+    if not (0.03 <= cover <= 0.7) or unsure > 0.35 or border > 0.45:
+        return None
+
+    din = cv2.distanceTransform(hard, cv2.DIST_L2, 5)
+    dout = cv2.distanceTransform(1 - hard, cv2.DIST_L2, 5)
+    rng = np.random.default_rng(int(hard.sum()) & 0xFFFFFFFF)
+    depth = din / max(1.0, float(din.max()))
+    depth = np.where(hard > 0, np.clip(depth * 0.85 + smooth_noise(rng, h, w, 9) * 0.15 * (depth > 0.04), 0, 1), 0)
+    sd = np.where(hard > 0, -(din - 0.5), dout - 0.5)
+    g = np.clip(0.5 + sd / (2 * SD_RANGE), 0, 1)
+    contours, _ = cv2.findContours(hard, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    r = pen_channel([(c, True) for c in contours if len(c) >= 6], h, w, np.abs(sd) < SD_RANGE)
+    if r is None:
+        return None
+    field = np.dstack([depth * 255, g * 255, r[0]]).round().clip(0, 255).astype(np.uint8)
+    return field, grow_channel(dout, rng, hard > 0)
+
+
+def cut(cutter, img):
+    k = key(img)
+    if char_state(k) is not None:
+        return
+    base = os.path.join(CACHE, k)
+    maps = build_char_maps(cutter.mask(load_small(img)))
     if maps is not None:
-        for suffix, arr in (("-field.png", maps[0]), ("-grow.png", maps[1])):
-            write_atomic(base + suffix, lambda t, a=arr: Image.fromarray(a, "RGB").save(t, "PNG", compress_level=3))
-    # .json — последним: его наличие значит «готово»
+        save_png(base + "-field.png", maps[0])
+        save_png(base + "-grow.png", maps[1])
+    meta = {"image": os.path.realpath(img), "ok": maps is not None, "version": VERSION}
     write_atomic(base + ".json", lambda t: open(t, "w", encoding="utf-8").write(json.dumps(meta)))
-    return (base + "-field.png", base + "-grow.png") if maps is not None else False
+    print(("char  " if maps is not None else "edge  ") + os.path.basename(img), flush=True)
+
+
+# ───────────────────────────── очередь и воркер ─────────────────────────────
+
+class Locked:
+    def __init__(self, path, block=True):
+        self.path, self.block, self.fd = path, block, None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | (0 if self.block else fcntl.LOCK_NB))
+        except BlockingIOError:
+            os.close(self.fd)
+            self.fd = None
+        return self.fd is not None
+
+    def __exit__(self, *a):
+        if self.fd is not None:
+            os.close(self.fd)
+
+
+def read_queue():
+    try:
+        return [l for l in open(QUEUE, encoding="utf-8").read().splitlines() if l]
+    except OSError:
+        return []
+
+
+def enqueue(paths):
+    if not os.path.exists(VENV_PY) or not paths:
+        return
+    with Locked(QUEUE_LOCK):
+        q = read_queue()
+        new = [p for p in map(os.path.realpath, paths) if p not in q]
+        if new:
+            write_atomic(QUEUE, lambda t: open(t, "w", encoding="utf-8").write("\n".join(q + new) + "\n"))
+    worker_running = False
+    with Locked(WORKER_LOCK, block=False) as free:
+        worker_running = not free
+    if not worker_running:
+        subprocess.Popen([VENV_PY, os.path.abspath(__file__), "worker"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=open(os.path.join(CACHE, "worker.log"), "a"),
+                         start_new_session=True, close_fds=True)
+
+
+def cmd_worker(_args):
+    reexec_in_venv("вырезке персонажа")
+    wl = Locked(WORKER_LOCK, block=False)
+    if not wl.__enter__():
+        return 0                                       # воркер уже есть — он и разберёт очередь
+    os.nice(19)
+    subprocess.run(["ionice", "-c", "3", "-p", str(os.getpid())], capture_output=True)
+    cutter = Cutter()
+    while True:
+        with Locked(QUEUE_LOCK):
+            q = read_queue()
+            if not q:
+                # Пусто: сначала отпускаем воркер, потом очередь. enqueue, дописавший путь
+                # после нас, увидит свободный воркер и запустит новый.
+                wl.__exit__()
+                return 0
+            img, rest = q[0], q[1:]
+            write_atomic(QUEUE, lambda t: open(t, "w", encoding="utf-8").write("".join(l + "\n" for l in rest)))
+        if not os.path.isfile(img):
+            continue
+        try:
+            cut(cutter, img)
+        except Exception as e:                         # один битый файл не останавливает очередь
+            print(f"ошибка {img}: {e}", file=sys.stderr, flush=True)
 
 
 # ───────────────────────────── команды ─────────────────────────────
 
 def cmd_map(args):
-    if not args:
+    if not args or not os.path.isfile(args[0]):
         print("wallpaper-fx-outline map IMG", file=sys.stderr)
         return 64
     img = args[0]
-    if not os.path.isfile(img):
-        print(f"wallpaper-fx-outline: нет файла {img}", file=sys.stderr)
-        return 1
-    r = cached(img)                     # кэш читается системным python, без numpy и venv
-    if r is None:
-        reexec_in_venv()
-        r = cut(img)
-    if not r:
-        return 1
-    print(*r)
+    k = key(img)
+    state = char_state(k)
+    if state:
+        print(*state, "char")
+        return 0
+    try:
+        import cv2  # noqa: F401
+        import numpy  # noqa: F401
+    except ImportError:
+        reexec_in_venv("нет cv2/numpy")
+    field, grow = edge_maps(img, k)
+    print(field, grow, "edge", flush=True)
+    if state is None:
+        enqueue([img])
     return 0
 
 
@@ -231,34 +466,43 @@ def images_in(folder):
 
 
 def cmd_warm(args):
+    if not os.path.exists(VENV_PY):
+        print("нет venv: wallpaper-fx-outline install", file=sys.stderr)
+        return 2
     folders = args or [os.path.dirname(os.path.realpath(CURRENT_BG))]
-    todo = [p for d in folders if os.path.isdir(d) for p in images_in(d) if cached(p) is None]
-    if not todo:
-        print("всё уже вырезано")
-        return 0
-    reexec_in_venv()
-    for p in todo:
-        try:
-            r = cut(p)
-            print(("outline   " if r else "contagion ") + os.path.basename(p), flush=True)
-        except Exception as e:          # один битый файл не должен останавливать остальные
-            print(f"ошибка    {os.path.basename(p)}: {e}", file=sys.stderr, flush=True)
+    todo = [p for d in folders if os.path.isdir(d) for p in images_in(d) if char_state(key(p)) is None]
+    enqueue(todo)
+    print(f"в очереди: {len(read_queue())}")
     return 0
 
 
-def cmd_install(_args):
-    uv = shutil.which("uv")
-    if not uv:
-        print("нужен uv: sudo pacman -S uv", file=sys.stderr)
-        return 1
-    os.makedirs(os.path.dirname(VENV), exist_ok=True)
-    if not os.path.exists(VENV_PY):
-        subprocess.run([uv, "venv", "-q", "--python", "3.12", VENV], check=True)
-    # onnxruntime-openvino — тот же onnxruntime, плюс GPU Intel; на других машинах — обычный
-    gpu = "onnxruntime-openvino" if _intel_gpu() else "onnxruntime"
-    subprocess.run([uv, "pip", "install", "-q", "--python", VENV_PY, "rembg", gpu,
-                    "opencv-python-headless", "numpy", "pillow"], check=True)
-    print("venv готов. Первая вырезка скачает модель (~210 МБ): wallpaper-fx-outline warm")
+def cmd_queue(args):
+    enqueue([a for a in args if os.path.isfile(a)])
+    return 0
+
+
+def cmd_status(_args):
+    n_ok = n_no = 0
+    if os.path.isdir(CACHE):
+        for name in os.listdir(CACHE):
+            if name.endswith(".json") and name != "queue.json":
+                try:
+                    ok = json.load(open(os.path.join(CACHE, name), encoding="utf-8")).get("ok")
+                except (OSError, ValueError):
+                    continue
+                n_ok += bool(ok)
+                n_no += not ok
+    with Locked(WORKER_LOCK, block=False) as free:
+        running = not free
+    try:
+        device = open(DEVICE_FILE, encoding="utf-8").read().strip()
+    except OSError:
+        device = "ещё не выбрано"
+    print(f"venv: {'есть' if os.path.exists(VENV_PY) else 'нет (wallpaper-fx-outline install)'}")
+    ready = ", ".join(d for d in DEVICES if device_ready(d))
+    print(f"устройство: {device} (доступны: {ready})")
+    print(f"воркер: {'работает' if running else 'спит'}, в очереди: {len(read_queue())}")
+    print(f"с персонажем: {n_ok}, без (линии): {n_no}")
     return 0
 
 
@@ -270,19 +514,20 @@ def _intel_gpu():
     return any("Intel" in l and ("VGA" in l or "Display" in l) for l in out.splitlines())
 
 
-def cmd_status(_args):
-    n_ok = n_no = 0
-    if os.path.isdir(CACHE):
-        for name in os.listdir(CACHE):
-            if name.endswith(".json"):
-                try:
-                    ok = json.load(open(os.path.join(CACHE, name), encoding="utf-8")).get("ok")
-                except (OSError, ValueError):
-                    continue
-                n_ok += bool(ok)
-                n_no += not ok
-    print(f"модель: {'установлена' if os.path.exists(VENV_PY) else 'нет (wallpaper-fx-outline install)'}")
-    print(f"кэш: {CACHE}\n  с персонажем: {n_ok}\n  без (contagion): {n_no}")
+def cmd_install(_args):
+    uv = shutil.which("uv")
+    if not uv:
+        print("нужен uv: sudo pacman -S uv", file=sys.stderr)
+        return 1
+    os.makedirs(SHARE, exist_ok=True)
+    if not os.path.exists(VENV_PY):
+        subprocess.run([uv, "venv", "-q", "--python", "3.12", VENV], check=True)
+    rt = "onnxruntime-openvino" if _intel_gpu() else "onnxruntime"
+    subprocess.run([uv, "pip", "install", "-q", "--python", VENV_PY, rt, "opencv-python-headless", "numpy", "pillow"],
+                   check=True)
+    subprocess.run([uv, "pip", "uninstall", "-q", "--python", VENV_PY, "rembg"], capture_output=True)
+    Cutter().model_path()
+    print("готово. NPU/GPU Intel: sudo pacman -S intel-npu-driver intel-compute-runtime level-zero-loader")
     return 0
 
 
@@ -290,7 +535,8 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
         return 0
-    cmds = {"map": cmd_map, "warm": cmd_warm, "install": cmd_install, "status": cmd_status}
+    cmds = {"map": cmd_map, "warm": cmd_warm, "queue": cmd_queue, "worker": cmd_worker,
+            "status": cmd_status, "install": cmd_install}
     if argv[0] not in cmds:
         print(f"wallpaper-fx-outline: нет команды «{argv[0]}»", file=sys.stderr)
         return 64

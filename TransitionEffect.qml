@@ -43,6 +43,9 @@ ShaderEffect {
   // Карты outline (scripts/wallpaper-fx-outline map): пусто — outline играет как contagion.
   property string fieldPath: ""
   property string growPath: ""
+  // char — контур персонажа (с заливкой), edge — линии картинки (без заливки)
+  property string mapType: "char"
+  readonly property real mapKind: mapType === "edge" ? 1 : 0
   readonly property bool mapReady: fieldPath !== "" && fieldImg.status === Image.Ready && growImg.status === Image.Ready
   readonly property bool mapFailed: fieldPath !== "" && (fieldImg.status === Image.Error || growImg.status === Image.Error)
   readonly property real hasMap: mapReady ? 1 : 0
@@ -59,6 +62,7 @@ ShaderEffect {
   }
   property color ember: "#ff9a3c"
   property color ink: "white"
+  property color inkDark: "black"
 
   // Цвета снимаются один раз в начале перехода, не биндингом: тема меняется посреди
   // перехода, а фронт не должен перекрашиваться на ходу.
@@ -71,6 +75,7 @@ ShaderEffect {
     ember = Qt.hsla(vivid.hslHue < 0 ? 0.08 : vivid.hslHue, Math.max(vivid.hslSaturation, 0.55),
                     Math.min(Math.max(vivid.hslLightness, 0.6), 0.8), 1)
     ink = pal.reduce(function(a, b) { return luma(b) > luma(a) ? b : a })
+    inkDark = pal.reduce(function(a, b) { return luma(b) < luma(a) ? b : a })
   }
 
   property variant fromTex: fromSource

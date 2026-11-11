@@ -45,7 +45,7 @@ Item {
   readonly property real fxCell: Math.max(2, Math.min(32, Number(fxConfig.cell) || 6))
   readonly property real fxGlow: Math.max(0, Math.min(1, fxConfig.frontGlow !== undefined ? Number(fxConfig.frontGlow) : 0.9))
   readonly property real fxLineWidth: Math.max(0.5, Math.min(6, Number(fxConfig.lineWidth) || 1.5))
-  readonly property int fxOutlineWait: Math.max(500, Math.min(30000, Number(fxConfig.outlineWait) || 8000))
+  readonly property int fxOutlineWait: Math.max(500, Math.min(30000, Number(fxConfig.outlineWait) || 3000))
   readonly property bool fxScene: fxActive === "contagion" || fxActive === "outline"
   // outline: карты для новых обоев (scripts/wallpaper-fx-outline). Пока ищем — переход ждёт.
   readonly property string outlineScript: String(Qt.resolvedUrl("scripts/wallpaper-fx-outline")).replace(/^file:\/\//, "")
@@ -53,9 +53,7 @@ Item {
   property string outlineField: ""
   property string outlineGrow: ""
   property int outlineVersion: -1
-  property double outlineStarted: 0
-  // Карту пришлось резать (долго) или не дождались: после перехода дорезать папку в фоне.
-  property bool outlineWarmNeeded: false
+  property string outlineKind: "char"
   property int fxPaletteTick: 0
   // Что играет текущий переход (random разрешается в конкретный эффект на старте).
   property string fxActive: "slant"
@@ -88,7 +86,6 @@ Item {
     if (fxActive === "outline" && path) {
       outlineVersion = backgroundVersion
       outlinePending = true
-      outlineStarted = Date.now()
       outlineProc.out = ""
       outlineProc.command = [outlineScript, "map", path]
       outlineProc.running = true
@@ -115,9 +112,9 @@ Item {
     onLoadFailed: root.fxConfig = ({})
   }
 
-  // Карта есть в кэше — ответ мгновенный; нет — скрипт режет персонажа (секунды) или выходит
-  // с ошибкой (нет модели / нет персонажа). Не дождались — играем contagion, а скрипт пусть
-  // дорежет в кэш: в следующий раз эти обои получат outline.
+  // Ответ почти мгновенный: карта персонажа из кэша, иначе карта линий картинки (меньше секунды),
+  // а сами обои скрипт ставит в очередь на вырезку единственному фоновому воркеру. contagion —
+  // только если карту вообще не на чем построить (нет cv2 и venv).
   // Пути приходят в stdout, а он может дочитаться и до, и после выхода процесса: успех решает
   // stdout, провал — код выхода (1 — персонажа нет, 2 — модели нет).
   Process {
@@ -128,22 +125,22 @@ Item {
         outlineProc.out = String(text || "").trim()
         var parts = outlineProc.out.split(/\s+/)
         if (parts.length >= 2 && root.outlinePending && root.outlineVersion === root.backgroundVersion)
-          root.outlineDone(parts[0], parts[1])
+          root.outlineDone(parts[0], parts[1], parts[2] || "char")
       }
     }
     onExited: function(code) {
       if (code !== 0 && root.outlinePending && root.outlineVersion === root.backgroundVersion)
-        root.outlineDone("", "")
+        root.outlineDone("", "", "")
     }
   }
   Timer {
     id: outlineWaitTimer
     interval: root.fxOutlineWait
-    onTriggered: if (root.outlinePending) { root.outlineWarmNeeded = true; root.outlineDone("", "") }
+    onTriggered: if (root.outlinePending) root.outlineDone("", "", "")
   }
-  function outlineDone(field, grow) {
+  function outlineDone(field, grow, kind) {
     outlineWaitTimer.stop()
-    if (field && Date.now() - outlineStarted > 1500) outlineWarmNeeded = true
+    outlineKind = kind === "edge" ? "edge" : "char"
     outlineField = field
     outlineGrow = grow
     if (!field) fxActive = "contagion"
@@ -333,12 +330,6 @@ Item {
     duration: root.fxScene ? root.fxDurationScene : root.fxDuration
     easing.type: root.fxScene ? Easing.Linear : root.fxEasingType(root.fxEasing)
     onFinished: {
-      // outline: в фоне дорезать остальные обои этой папки, чтобы следующие переходы не ждали
-      // (без модели скрипт сразу выходит; уже вырезанные пропускает).
-      if (root.outlineWarmNeeded && root.currentBackground) {
-        root.outlineWarmNeeded = false
-        Quickshell.execDetached(["bash", "-c", '"$0" warm "$(dirname "$1")" >/dev/null 2>&1', root.outlineScript, root.currentBackground])
-      }
       if (root.incomingBackground) {
         root.displayedBackground = root.currentBackground || root.incomingBackground
         root.finishingTransition = true
@@ -498,6 +489,7 @@ Item {
         lineW: root.fxLineWidth
         fieldPath: root.fxActive === "outline" ? root.outlineField : ""
         growPath: root.fxActive === "outline" ? root.outlineGrow : ""
+        mapType: root.outlineKind
         onMapReadyChanged: panel.maybeStartReveal()
         onMapFailedChanged: panel.maybeStartReveal()
         origin: {
