@@ -24,10 +24,11 @@ ShaderEffect {
     "fade": 1, "slant": 2, "wipe": 3, "wave": 4, "grow": 5, "outer": 6, "diamond": 7, "clock": 8,
     "blinds": 9, "doors": 10, "mosaic": 11, "dissolve": 12, "pixelize": 13, "ripple": 14, "swirl": 15,
     "crosszoom": 16, "slide": 17, "zoom": 18, "glitch": 19, "burn": 20, "waterdrop": 21, "hexagon": 22,
-    "contagion": 23, "outline": 24
+    "contagion": 23, "outline": 24, "outline-cut": 24
   })
   // Эффекты-«сцены»: живут дольше обычных (durationScene) и идут линейно — кривые внутри шейдера.
-  readonly property var sceneEffects: ["contagion", "outline"]
+  // outline — линии картинки; outline-cut — контур вырезанного персонажа (пока не вырезан — линии).
+  readonly property var sceneEffects: ["contagion", "outline", "outline-cut"]
   readonly property var effectNames: Object.keys(modes)
 
   readonly property real mode: modes[effect] !== undefined ? modes[effect] : 1

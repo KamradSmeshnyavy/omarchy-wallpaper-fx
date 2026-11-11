@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""wallpaper-fx-keep — вернуть Wallpaper FX после живых обоев owe.
+
+owe (видео- и GIF-обои) на время видео выключает «плагин обоев оболочки», а потом
+включает его обратно — по имени omarchy.background. Про клоны он не знает, и
+включение стокового плагина вытесняет kamradsmeshnyavy.background из shell.json.
+
+Скрипт запускает systemd-юнит wallpaper-fx-keep.path при каждом изменении shell.json.
+Клон возвращается, только если всё сходится: он был включён, сейчас вместо него
+стоковый плагин, в журнале за последние секунды есть «shell background enabled» от
+owe, и owe уже отдал картинку оболочке (engine "shell"). Выключили клон сами
+(`omarchy plugin disable …`) — события owe нет, и скрипт ничего не делает.
+
+Совсем выключить: "keepAfterOwe": false в ~/.config/omarchy/wallpaper-transition.json.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+SHELL_JSON = os.path.join(HOME, ".config", "omarchy", "shell.json")
+FX_CFG = os.path.join(HOME, ".config", "omarchy", "wallpaper-transition.json")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.join(HOME, ".local", "state")), "wallpaper-fx")
+MARK = os.path.join(STATE, "clone-was-enabled")
+CLONE, STOCK = "kamradsmeshnyavy.background", "omarchy.background"
+
+
+def read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def state():
+    cfg = read_json(SHELL_JSON)
+    plugins = cfg.get("plugins") if isinstance(cfg.get("plugins"), list) else []
+    clone_on = any(isinstance(p, dict) and p.get("id") == CLONE for p in plugins)
+    disabled = cfg.get("disabledPlugins") if isinstance(cfg.get("disabledPlugins"), list) else []
+    return clone_on, STOCK in disabled
+
+
+def owe_shows_still():
+    """True — owe нет или он отдал картинку оболочке; False — owe сейчас крутит видео."""
+    if not shutil.which("owe"):
+        return True
+    try:
+        out = subprocess.run(["owe", "status"], capture_output=True, text=True, timeout=3).stdout
+        return json.loads(out).get("engine", "shell") == "shell"
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return True
+
+
+def owe_just_enabled():
+    """owe только что включил обои оболочки (а не пользователь сам вернул сток)."""
+    try:
+        out = subprocess.run(["journalctl", "--user", "--since", "-20s", "-o", "cat", "-g", "shell background enabled"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "shell background enabled" in out
+
+
+def main():
+    if read_json(FX_CFG).get("keepAfterOwe") is False:
+        return 0
+    clone_on, stock_off = state()
+    if clone_on:
+        os.makedirs(STATE, exist_ok=True)
+        open(MARK, "w").close()
+        return 0
+    if not os.path.exists(MARK) or stock_off:
+        return 0                     # клон не был включён, или owe сейчас держит обои выключенными
+    time.sleep(1.5)                  # owe переключает engine и плагин не одним шагом — дать устояться
+    clone_on, stock_off = state()
+    if clone_on or stock_off or not owe_just_enabled() or not owe_shows_still():
+        return 0
+    subprocess.run(["omarchy", "plugin", "enable", CLONE], capture_output=True, timeout=20)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

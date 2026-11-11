@@ -21,7 +21,9 @@
   <key>[-edge]-grow.png   R/G — 16-битный порядок, в котором приходит всё остальное
   <key>.json              персонаж проверен: ok true / false
 
-  wallpaper-fx-outline map IMG       «field grow char|edge»; exit 2 — не на чем строить (нет cv2 и venv)
+  wallpaper-fx-outline map IMG [--lines]
+                                     «field grow char|edge»; --lines — только линии, без вырезки и очереди;
+                                     exit 2 — не на чем строить (нет cv2 и venv)
   wallpaper-fx-outline warm [DIR…]   поставить невырезанные обои в очередь (по умолчанию — текущей темы)
   wallpaper-fx-outline status        устройство, очередь, воркер, кэш
   wallpaper-fx-outline install       venv ~/.local/share/wallpaper-fx/venv (onnxruntime-openvino, opencv, numpy,
@@ -45,6 +47,7 @@ ROOT = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache"
 CACHE = os.path.join(ROOT, "outline")
 OV_CACHE = os.path.join(ROOT, "ov")
 DEVICE_FILE = os.path.join(ROOT, "device")
+FAILED_FILE = os.path.join(ROOT, "device-failed")   # устройства, на которых вырезка падала (при этих драйверах)
 QUEUE = os.path.join(CACHE, "queue")
 QUEUE_LOCK = os.path.join(CACHE, "queue.lock")
 WORKER_LOCK = os.path.join(CACHE, "worker.lock")
@@ -227,6 +230,27 @@ def edge_maps(img, k):
 
 # ───────────────────────────── вырезка персонажа ─────────────────────────────
 
+def drivers_stamp():
+    """Отпечаток драйверов: при обновлении пакетов провалы забываются."""
+    import glob
+    libs = sorted(glob.glob("/usr/lib/libze_*.so*"))
+    return ";".join(f"{os.path.basename(l)}:{int(os.stat(l).st_mtime)}" for l in libs)
+
+
+def read_failed():
+    try:
+        stamp, *devs = open(FAILED_FILE, encoding="utf-8").read().split("\n")
+    except OSError:
+        return set()
+    return {d for d in devs if d} if stamp == drivers_stamp() else set()
+
+
+def mark_failed(device):
+    devs = read_failed() | {device}
+    os.makedirs(ROOT, exist_ok=True)
+    write_atomic(FAILED_FILE, lambda t: open(t, "w", encoding="utf-8").write("\n".join([drivers_stamp(), *sorted(devs)]) + "\n"))
+
+
 def device_ready(device):
     import glob
     if device == "CPU":
@@ -276,14 +300,13 @@ class Cutter:
         return s
 
     def _candidates(self):
-        try:
-            saved = open(DEVICE_FILE, encoding="utf-8").read().strip()
-        except OSError:
-            saved = ""
-        order = [saved] + [d for d in DEVICES if d != saved] if saved in DEVICES else list(DEVICES)
+        # Всегда лучшее из доступного: NPU → GPU → CPU. Запомненным устройство не делаем —
+        # иначе после установки драйверов воркер так и сидел бы на CPU. Помним только провалы,
+        # и только для текущих драйверов (поставили новые — пробуем снова).
+        failed = read_failed()
         # Без драйвера onnxruntime всё равно соберёт сессию (на CPU, со всеми потоками и
         # полной памятью) — поэтому недоступные устройства отсекаем заранее, по библиотекам.
-        return [d for d in order if device_ready(d)]
+        return [d for d in DEVICES if device_ready(d) and (d == "CPU" or d not in failed)]
 
     def mask(self, rgb):
         """Мягкая маска 0..255 размера rgb (как у BiRefNet-сессии rembg: 1024², ImageNet, sigmoid, min-max)."""
@@ -303,6 +326,8 @@ class Cutter:
                 break
             except Exception as e:                     # устройство не завелось — следующее
                 print(f"{dev}: {str(e).splitlines()[0][:160]}", file=sys.stderr, flush=True)
+                if dev != "CPU":
+                    mark_failed(dev)
                 self.session = None
                 self.device = None
         else:
@@ -441,8 +466,9 @@ def cmd_map(args):
         print("wallpaper-fx-outline map IMG", file=sys.stderr)
         return 64
     img = args[0]
+    lines_only = "--lines" in args[1:]
     k = key(img)
-    state = char_state(k)
+    state = None if lines_only else char_state(k)
     if state:
         print(*state, "char")
         return 0
@@ -453,7 +479,7 @@ def cmd_map(args):
         reexec_in_venv("нет cv2/numpy")
     field, grow = edge_maps(img, k)
     print(field, grow, "edge", flush=True)
-    if state is None:
+    if state is None and not lines_only:
         enqueue([img])
     return 0
 
@@ -500,7 +526,8 @@ def cmd_status(_args):
         device = "ещё не выбрано"
     print(f"venv: {'есть' if os.path.exists(VENV_PY) else 'нет (wallpaper-fx-outline install)'}")
     ready = ", ".join(d for d in DEVICES if device_ready(d))
-    print(f"устройство: {device} (доступны: {ready})")
+    failed = ", ".join(sorted(read_failed())) or "нет"
+    print(f"устройство: {device} (доступны: {ready}; не сработали: {failed})")
     print(f"воркер: {'работает' if running else 'спит'}, в очереди: {len(read_queue())}")
     print(f"с персонажем: {n_ok}, без (линии): {n_no}")
     return 0

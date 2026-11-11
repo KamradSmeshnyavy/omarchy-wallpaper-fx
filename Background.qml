@@ -46,7 +46,11 @@ Item {
   readonly property real fxGlow: Math.max(0, Math.min(1, fxConfig.frontGlow !== undefined ? Number(fxConfig.frontGlow) : 0.9))
   readonly property real fxLineWidth: Math.max(0.5, Math.min(6, Number(fxConfig.lineWidth) || 1.5))
   readonly property int fxOutlineWait: Math.max(500, Math.min(30000, Number(fxConfig.outlineWait) || 3000))
-  readonly property bool fxScene: fxActive === "contagion" || fxActive === "outline"
+  readonly property bool fxOutline: fxActive === "outline" || fxActive === "outline-cut"
+  readonly property bool fxScene: fxActive === "contagion" || fxOutline
+  // fx: живые обои (видео, GIF) рисует owe, а не мы: он прячет оболочку через setSuspended.
+  property bool suspended: false
+  function isLive(path) { return /\.(mp4|m4v|mov|webm|mkv|avi|gif)$/i.test(String(path || "")) }
   // outline: карты для новых обоев (scripts/wallpaper-fx-outline). Пока ищем — переход ждёт.
   readonly property string outlineScript: String(Qt.resolvedUrl("scripts/wallpaper-fx-outline")).replace(/^file:\/\//, "")
   property bool outlinePending: false
@@ -83,11 +87,12 @@ Item {
     outlinePending = false
     outlineField = ""
     outlineGrow = ""
-    if (fxActive === "outline" && path) {
+    if (fxOutline && path) {
       outlineVersion = backgroundVersion
       outlinePending = true
       outlineProc.out = ""
-      outlineProc.command = [outlineScript, "map", path]
+      // outline — только линии картинки; outline-cut — контур персонажа (пока не вырезан — линии)
+      outlineProc.command = [outlineScript, "map", path].concat(fxActive === "outline" ? ["--lines"] : [])
       outlineProc.running = true
       outlineWaitTimer.restart()
     }
@@ -203,9 +208,10 @@ Item {
     revealAnimation.stop()
     finishingTransition = false
     // fx: эффект выбирается на каждый переход; none — без анимации.
-    fxPrepare(instant ? "" : path)
+    fxPrepare(instant || isLive(path) ? "" : path)
 
-    if (instant || !displayedBackground || fxType === "none") {
+    // Видео и GIF не идут через переход: их кадры рисует owe, а смешивать два видео дорого.
+    if (instant || !displayedBackground || fxType === "none" || isLive(path) || isLive(displayedBackground)) {
       oldBackground = ""
       incomingBackground = ""
       displayedBackground = path
@@ -311,6 +317,11 @@ Item {
     function replay(): void {
       if (!replayProc.running) replayProc.running = true
     }
+
+    // fx: как в стоке — owe прячет обои оболочки, пока сам показывает видео.
+    function setSuspended(value: string): void {
+      root.suspended = value === "true"
+    }
   }
 
   Timer {
@@ -348,7 +359,7 @@ Item {
       required property var modelData
 
       screen: modelData
-      visible: !remapGuard.remapping
+      visible: !remapGuard.remapping && !root.suspended
       anchors { top: true; bottom: true; left: true; right: true }
 
       ScreenMoveRemap {
@@ -367,7 +378,7 @@ Item {
 
       // outline ждёт свои карты: путь от скрипта и загруженные текстуры.
       function fxReady() {
-        if (root.fxActive !== "outline") return true
+        if (!root.fxOutline) return true
         if (root.outlinePending) return false
         return root.outlineField === "" || fxView.mapReady || fxView.mapFailed
       }
@@ -487,8 +498,8 @@ Item {
         cell: root.fxCell
         glow: root.fxGlow
         lineW: root.fxLineWidth
-        fieldPath: root.fxActive === "outline" ? root.outlineField : ""
-        growPath: root.fxActive === "outline" ? root.outlineGrow : ""
+        fieldPath: root.fxOutline ? root.outlineField : ""
+        growPath: root.fxOutline ? root.outlineGrow : ""
         mapType: root.outlineKind
         onMapReadyChanged: panel.maybeStartReveal()
         onMapFailedChanged: panel.maybeStartReveal()

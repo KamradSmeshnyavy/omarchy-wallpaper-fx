@@ -1,0 +1,9 @@
+# Wallpaper FX: вернуть клон обоев после живых обоев owe (scripts/wallpaper-fx-keep).
+[Unit]
+Description=Wallpaper FX: keep the background clone after owe live wallpapers
+
+[Path]
+PathChanged=%h/.config/omarchy/shell.json
+
+[Install]
+WantedBy=default.target

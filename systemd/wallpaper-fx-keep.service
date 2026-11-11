@@ -1,0 +1,6 @@
+[Unit]
+Description=Wallpaper FX: re-enable kamradsmeshnyavy.background after owe
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/omarchy/plugins/kamradsmeshnyavy.background/scripts/wallpaper-fx-keep

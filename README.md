@@ -12,7 +12,7 @@ transition between wallpapers is new.
 
 `slant` (stock), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
-`hexagon`, `contagion`, `outline`, `random`, `none`. Own implementations of ideas from swww and gl-transitions.
+`hexagon`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Own implementations of ideas from swww and gl-transitions.
 
 ### Scene transitions: `contagion` and `outline`
 
@@ -22,12 +22,13 @@ Two slower effects (`durationScene`, 1.9 s by default) after the transitions of
 - **contagion**: pixel colonies land at random places and eat through the old wallpaper along ragged
   fronts. A freshly flipped cell flashes in the brightest colour of the new theme, a thin glow rides the
   front, and now and then a spark jumps ahead of it. It is fully procedural, with no maps and no Python.
-- **outline**: a line is always drawn. The scene steps back, and a thin line draws the character's
-  outline with two pens from the top: light on dark parts of the picture, dark on light ones. The character fills
-  in from that line, then the rest of the world grows out of it. The character is cut out once per
-  wallpaper by [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) (onnxruntime). Until a wallpaper is cut out,
-  or when it has no clear character, the line traces the picture's own edges instead (Canny, built in under a
-  second) and the world grows out of those lines.
+- **outline**: the scene steps back, and thin lines trace the picture's own edges (Canny, built in under a
+  second), drawn with pens: light on dark parts of the picture, dark on light ones. Then the world grows out of
+  the lines. It is light: no model and no background work.
+- **outline-cut**: outline with a cut-out. The line draws the character's outline with two pens from the top,
+  the character fills in from it, then the world grows out of it. The character is cut out once per wallpaper
+  by [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) (onnxruntime) in the background. Until then, or when
+  there is no clear character, it plays like `outline`.
 
 ```sh
 scripts/wallpaper-fx-outline install   # venv in ~/.local/share/wallpaper-fx + BiRefNet-lite (~220 MB)
@@ -67,6 +68,16 @@ Omarchy 4 (Quattro) with its shell. Tested on Omarchy 4.0.6 with Quickshell 0.3.
 
 - Nothing beyond Omarchy: the transitions are a single GLSL shader run by Quickshell.
 - `outline` only: `opencv` + `numpy` for the edge maps (system python or the venv); the cut-out venv is optional.
+
+### Live wallpapers (owe)
+
+Video and GIF wallpapers are played by owe (the `owe` package), not by this plugin. They change
+instantly, with no transition, and owe hides the shell's wallpaper through `setSuspended`, as it does with the stock
+plugin. Older versions of this plugin lacked `setSuspended`, so owe fell back to toggling `omarchy.background`, and
+that pushed the clone out of `shell.json`. As a safety net, `systemd/wallpaper-fx-keep.{path,service}` re-enables the
+clone if that ever happens again. It acts only right after an owe "shell background enabled" event, so it never undoes
+a manual switch. It is optional: link it into `~/.config/systemd/user/` and run
+`systemctl --user enable --now wallpaper-fx-keep.path`. Turn it off with `"keepAfterOwe": false`.
 
 ## Uninstall
 
