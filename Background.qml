@@ -50,6 +50,23 @@ Item {
   readonly property bool fxScene: fxActive === "contagion" || fxOutline
   // fx: живые обои (видео, GIF) рисует owe, а не мы: он прячет оболочку через setSuspended.
   property bool suspended: false
+  // owe зовёт setSuspended только при смене обоев, а перезапуск оболочки это состояние теряет — и неподвижные
+  // обои оболочки ложатся поверх видео (слой создан позже). Поэтому при старте и после смены обоев
+  // спрашиваем owe сами: engine "renderer" — рисует он, наши обои прячем.
+  Process {
+    id: oweProbe
+    command: ["bash", "-c", "command -v owe >/dev/null && owe status 2>/dev/null"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var st = JSON.parse(String(text || "{}"))
+          if (st.status === "ok") root.suspended = st.engine === "renderer" && st.render_alive === true
+        } catch (e) {}
+      }
+    }
+  }
+  Timer { id: oweProbeTimer; interval: 1500; onTriggered: if (!oweProbe.running) oweProbe.running = true }
+  onCurrentBackgroundChanged: oweProbeTimer.restart()
   function isLive(path) { return /\.(mp4|m4v|mov|webm|mkv|avi|gif)$/i.test(String(path || "")) }
   // outline: карты для новых обоев (scripts/wallpaper-fx-outline). Пока ищем — переход ждёт.
   readonly property string outlineScript: String(Qt.resolvedUrl("scripts/wallpaper-fx-outline")).replace(/^file:\/\//, "")
@@ -349,7 +366,7 @@ Item {
     }
   }
 
-  Component.onCompleted: refreshBackground()
+  Component.onCompleted: { refreshBackground(); oweProbeTimer.restart() }
 
   Variants {
     model: Quickshell.screens
