@@ -111,7 +111,7 @@ Item {
   property var fxCursor: null
   readonly property var fxEffects: ["slant", "fade", "wipe", "wave", "grow", "outer", "diamond", "clock",
     "blinds", "doors", "mosaic", "dissolve", "pixelize", "ripple", "swirl", "crosszoom", "slide", "zoom",
-    "glitch", "burn", "waterdrop", "hexagon", "contagion"]
+    "glitch", "burn", "waterdrop", "hexagon", "hexreveal", "contagion"]
 
   function fxEasingType(name) {
     var map = {

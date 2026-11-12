@@ -11,7 +11,7 @@
 
 `slant` (сток), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
-`hexagon`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Свои реализации по идеям swww и gl-transitions.
+`hexagon`, `hexreveal`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Свои реализации по идеям swww и gl-transitions; `hexreveal` (клетки сот раскрываются каждая из своей середины волной от `origin`, кромка подсвечена) перенесён с `wptrans/hexreveal.wgsl` из Vitreus (MIT, © natepayn3).
 
 ### Переходы-сцены: `contagion` и `outline`
 

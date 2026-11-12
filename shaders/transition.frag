@@ -187,6 +187,44 @@ vec3 outline(vec2 uv) {
     return c;
 }
 
+// hexreveal (по мотивам Vitreus wptrans/hexreveal.wgsl, MIT): новые обои проступают сквозь соты — каждая
+// клетка (острый верх) раскрывается из своей середины, пока не заполнит себя; порядок — волна от origin с
+// долей случайности, кромка растущей клетки ловит свет.
+vec4 hexreveal(vec2 uv) {
+    vec4 a = A(uv), b = B(uv);
+    if (progress >= 0.999) return b;
+    vec2 px = uv * vec2(sw, sh);
+    float r = max(28.0, sw / 30.0);          // радиус клетки (от центра до вершины), px
+    const float SQ3 = 1.7320508;
+    // Осевые координаты, округление в кубических.
+    float qf = (SQ3 / 3.0 * px.x - px.y / 3.0) / r;
+    float rf = (2.0 / 3.0 * px.y) / r;
+    float yf = -qf - rf;
+    float rx = floor(qf + 0.5), ry = floor(yf + 0.5), rz = floor(rf + 0.5);
+    float dx = abs(rx - qf), dy = abs(ry - yf), dz = abs(rz - rf);
+    if (dx > dy && dx > dz) rx = -ry - rz;
+    else if (dy > dz) ry = -rx - rz;
+    else rz = -rx - ry;
+    vec2 centre = vec2(r * SQ3 * (rx + rz * 0.5), r * 1.5 * rz);
+    float reach = length(vec2(sw, sh));
+    float wave = clamp(length(centre - origin * vec2(sw, sh)) / reach, 0.0, 1.0);
+    float chance = rand(vec2(rx, rz) + seed);
+    const float SPAN = 0.35;                 // сколько от всего перехода раскрывается одна клетка
+    float delay = mix(chance, wave, 0.7) * (1.0 - SPAN);
+    float t = clamp((progress - delay) / SPAN, 0.0, 1.0);
+    float ease = t * t * (3.0 - 2.0 * t);
+    vec2 q = px - centre;
+    float inr = r * SQ3 * 0.5;
+    float d = max(abs(q.x), max(abs(dot(q, vec2(0.5, 0.8660254))), abs(dot(q, vec2(-0.5, 0.8660254)))));
+    float grown = inr * ease * 1.05;
+    if (grown < 1.0) return a;
+    float sd = d - grown;
+    float cover = 1.0 - smoothstep(-0.9, 0.9, sd);
+    float rim = (1.0 - smoothstep(0.0, 5.0, -sd)) * (1.0 - ease);
+    vec3 nb = mix(b.rgb, vec3(1.0), 0.28 * rim);
+    return vec4(mix(a.rgb, nb, cover), 1.0);
+}
+
 void main() {
     vec2 uv = qt_TexCoord0;
     float p = progress;
@@ -299,6 +337,8 @@ void main() {
         vec2 center = (vec2(col + 0.5 - mod(row, 2.0) * 0.5, row + 0.5) / 14.0) / asp;
         float order = length((center - 0.5) * asp) / farthest(vec2(0.5)) * 0.7 + rand(cell + seed) * 0.3;
         c = mix(A(uv), B(uv), step(order, p * 1.02));
+    } else if (m == 25) {    // hexreveal — соты раскрываются каждая из своей середины волной от origin (Vitreus)
+        c = hexreveal(uv);
     } else if (m == 23) {    // contagion — колонии клетками прогрызают старые обои
         c = vec4(contagion(uv), 1.0);
     } else if (m == 24) {    // outline — контур персонажа, заливка, мир растёт из него

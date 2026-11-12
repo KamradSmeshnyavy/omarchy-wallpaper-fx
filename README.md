@@ -12,7 +12,7 @@ transition between wallpapers is new.
 
 `slant` (stock), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
-`hexagon`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Own implementations of ideas from swww and gl-transitions.
+`hexagon`, `hexreveal`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Own implementations of ideas from swww and gl-transitions; `hexreveal` (honeycomb cells each opening from their own middle in a wave from `origin`, with a lit rim) is ported from Vitreus' `wptrans/hexreveal.wgsl` (MIT, © natepayn3).
 
 ### Scene transitions: `contagion` and `outline`
 
