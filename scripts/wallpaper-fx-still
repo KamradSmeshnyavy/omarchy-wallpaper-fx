@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# wallpaper-fx-still FROM TO — неподвижные кадры для перехода с живыми обоями (видео / GIF, их играет owe).
+# Печатает две строки: кадр «откуда» и кадр «куда» (картинка — сама собой).
+#   откуда: если это видео, которое сейчас играет owe, — кадр ровно в текущий момент воспроизведения
+#           (owe render-status → time_pos по loaded_path; GIF owe перекодирует в mp4), иначе — первый кадр;
+#   куда:   первый кадр — owe начнёт видео с него, и переход закончится бесшовно.
+# Кадры первого кадра кэшируются (~/.cache/wallpaper-fx/stills, ключ — путь и mtime), «текущий» — свежий файл.
+# Переход (в том числе outline / outline-cut) идёт между этими картинками, Background.qml потом прячет свой
+# слой, и под ним уже играет видео.
+set -uo pipefail
+
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wallpaper-fx/stills"
+mkdir -p "$CACHE"
+
+is_live() { [[ ${1,,} =~ \.(mp4|m4v|mov|webm|mkv|avi|gif)$ ]]; }
+
+first_frame() { # $1 = видео → путь кадра (кэш)
+  local src=$1 key out
+  key=$(printf '%s\t%s' "$src" "$(stat -Lc %Y "$src" 2>/dev/null)" | md5sum | cut -c1-16)
+  out="$CACHE/$key.png"
+  [[ -s $out ]] || ffmpeg -nostdin -loglevel error -y -i "$src" -frames:v 1 "$out" 2>/dev/null
+  [[ -s $out ]] && printf '%s\n' "$out" || printf '%s\n' "$src"
+}
+
+current_frame() { # $1 = видео «откуда» → кадр в текущий момент, если его играет owe
+  local src=$1 st rs pos loaded out real
+  real=$(readlink -f "$src" 2>/dev/null || printf '%s' "$src")
+  if command -v owe >/dev/null; then
+    st=$(owe status 2>/dev/null || true)
+    rs=$(owe render-status 2>/dev/null || true)
+    local playing
+    playing=$(jq -r '.source_path // ""' <<<"$st")
+    if [[ -n $playing && $(readlink -f "$playing" 2>/dev/null) == "$real" ]]; then
+      pos=$(jq -r '.time_pos // 0' <<<"$rs")
+      loaded=$(jq -r '.path // ""' <<<"$rs")
+      [[ -f $loaded ]] || loaded=$src
+      # Два файла по очереди: путь каждый раз другой (Image в QML кэширует по пути), удалять ничего не нужно.
+      out="$CACHE/current-a.png"
+      [[ $(readlink "$CACHE/current-last" 2>/dev/null) == current-a.png ]] && out="$CACHE/current-b.png"
+      if ffmpeg -nostdin -loglevel error -y -ss "$pos" -i "$loaded" -frames:v 1 "$out" 2>/dev/null && [[ -s $out ]]; then
+        ln -sfn "${out##*/}" "$CACHE/current-last"
+        printf '%s\n' "$out"
+        return
+      fi
+    fi
+  fi
+  first_frame "$src"
+}
+
+from=${1:-}
+to=${2:-}
+if [[ -n $from ]] && is_live "$from"; then current_frame "$from"; else printf '%s\n' "$from"; fi
+if [[ -n $to ]] && is_live "$to"; then first_frame "$to"; else printf '%s\n' "$to"; fi

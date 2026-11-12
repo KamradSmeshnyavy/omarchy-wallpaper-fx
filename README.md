@@ -71,9 +71,12 @@ Omarchy 4 (Quattro) with its shell. Tested on Omarchy 4.0.6 with Quickshell 0.3.
 
 ### Live wallpapers (owe)
 
-Video and GIF wallpapers are played by owe (the `owe` package), not by this plugin. They change
-instantly, with no transition, and owe hides the shell's wallpaper through `setSuspended`, as it does with the stock
-plugin. Older versions of this plugin lacked `setSuspended`, so owe fell back to toggling `omarchy.background`, and
+Video and GIF wallpapers are played by owe (the `owe` package), not by this plugin; owe hides the shell's wallpaper
+through `setSuspended`, as it does with the stock plugin. Transitions still play, outline-cut included:
+`scripts/wallpaper-fx-still` gives two stills — the frame owe is showing right now (its `time_pos`) when leaving a video
+and the first frame of the new video when entering one — the effect runs between them and the layer stays up until it
+ends (then owe's video, started from that same first frame, is underneath). After a shell restart the plugin asks
+`owe status` itself, so the still wallpaper never covers a playing video. Older versions of this plugin lacked `setSuspended`, so owe fell back to toggling `omarchy.background`, and
 that pushed the clone out of `shell.json`. As a safety net, `systemd/wallpaper-fx-keep.{path,service}` re-enables the
 clone if that ever happens again. It acts only right after an owe "shell background enabled" event, so it never undoes
 a manual switch. It is optional: link it into `~/.config/systemd/user/` and run

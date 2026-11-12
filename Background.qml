@@ -68,6 +68,34 @@ Item {
   Timer { id: oweProbeTimer; interval: 1500; onTriggered: if (!oweProbe.running) oweProbe.running = true }
   onCurrentBackgroundChanged: oweProbeTimer.restart()
   function isLive(path) { return /\.(mp4|m4v|mov|webm|mkv|avi|gif)$/i.test(String(path || "")) }
+  // Переходы с живыми обоями: сначала кадры «откуда / куда» (scripts/wallpaper-fx-still — текущий кадр
+  // owe и первый кадр нового видео), переход идёт между ними, а слой не прячется, пока он не доиграет
+  // (stillHold) — потом под ним уже играет видео owe.
+  readonly property string stillScript: String(Qt.resolvedUrl("scripts/wallpaper-fx-still")).replace(/^file:\/\//, "")
+  property bool stillPending: false
+  readonly property bool stillHold: stillPending || (incomingBackground !== "" && revealProgress < 1)
+  Process {
+    id: stillProc
+    property int version: -1
+    stdout: StdioCollector {
+      onStreamFinished: {
+        root.stillPending = false
+        if (stillProc.version !== root.backgroundVersion) return
+        var lines = String(text || "").split("\n")
+        var from = (lines[0] || "").trim(), to = (lines[1] || "").trim()
+        if (!from || !to || root.isLive(to) || root.isLive(from)) {
+          root.displayedBackground = root.isLive(root.currentBackground) ? (to || root.currentBackground) : root.currentBackground
+          root.revealProgress = 1
+          return
+        }
+        root.fxPrepare(to)
+        root.oldBackground = from
+        root.incomingBackground = to
+        root.revealProgress = 0
+      }
+    }
+    onExited: function(code) { if (code !== 0) root.stillPending = false }
+  }
   // outline: карты для новых обоев (scripts/wallpaper-fx-outline). Пока ищем — переход ждёт.
   readonly property string outlineScript: String(Qt.resolvedUrl("scripts/wallpaper-fx-outline")).replace(/^file:\/\//, "")
   property bool outlinePending: false
@@ -225,9 +253,21 @@ Item {
     revealAnimation.stop()
     finishingTransition = false
     // fx: эффект выбирается на каждый переход; none — без анимации.
-    fxPrepare(instant || isLive(path) ? "" : path)
+    stillPending = false
+    fxPrepare(instant || isLive(path) || isLive(fromPath || displayedBackground) ? "" : path)
 
-    // Видео и GIF не идут через переход: их кадры рисует owe, а смешивать два видео дорого.
+    // Видео и GIF — через неподвижные кадры (wallpaper-fx-still): переход между ними, видео рисует owe.
+    var fromSrc = fromPath || displayedBackground
+    if (!instant && displayedBackground && fxType !== "none" && (isLive(path) || isLive(fromSrc))) {
+      oldBackground = ""
+      incomingBackground = ""
+      stillPending = true
+      stillProc.running = false
+      stillProc.version = backgroundVersion
+      stillProc.command = [stillScript, fromSrc, path]
+      stillProc.running = true
+      return
+    }
     if (instant || !displayedBackground || fxType === "none" || isLive(path) || isLive(displayedBackground)) {
       oldBackground = ""
       incomingBackground = ""
@@ -359,7 +399,9 @@ Item {
     easing.type: root.fxScene ? Easing.Linear : root.fxEasingType(root.fxEasing)
     onFinished: {
       if (root.incomingBackground) {
-        root.displayedBackground = root.currentBackground || root.incomingBackground
+        // Живые обои: на базе остаётся их первый кадр (видео поверх рисует owe, когда слой спрячется).
+        root.displayedBackground = root.isLive(root.currentBackground) ? root.incomingBackground
+          : (root.currentBackground || root.incomingBackground)
         root.finishingTransition = true
       }
       root.revealProgress = 1
@@ -376,7 +418,7 @@ Item {
       required property var modelData
 
       screen: modelData
-      visible: !remapGuard.remapping && !root.suspended
+      visible: !remapGuard.remapping && (!root.suspended || root.stillHold)
       anchors { top: true; bottom: true; left: true; right: true }
 
       ScreenMoveRemap {
