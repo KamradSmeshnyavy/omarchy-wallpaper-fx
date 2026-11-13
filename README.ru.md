@@ -11,7 +11,9 @@
 
 `slant` (сток), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
-`hexagon`, `hexreveal`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Свои реализации по идеям swww и gl-transitions; `hexreveal` (клетки сот раскрываются каждая из своей середины волной от `origin`, кромка подсвечена) перенесён с `wptrans/hexreveal.wgsl` из Vitreus (MIT, © natepayn3).
+`hexagon`, `hexreveal`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Свои реализации по идеям swww и gl-transitions; `hexreveal` (клетки сот раскрываются каждая из своей середины волной от `origin`, кромка подсвечена) перенесён с `wptrans/hexreveal.wgsl` из Vitreus (MIT, © natepayn3); `dotwave` (волна от `origin`: на гребне картинка рассыпается в точки-светодиоды и собирается уже новой; шаг точек — `cell` × 1.6) взят из `wall.frag` glyph-rice (GPL-3.0).
+
+**Вид обоев** — `~/.config/omarchy/wallpaper-look.json` (пишет стиль `glyph` в image picker): `look` — `color` | `mono` (серое фото в тонах темы) | `dots` (матрица точек-светодиодов), `pitch` — шаг точек, px (4–32), `bright` — 10–100, от цвета фона до картинки. Весь слой обоев вместе с переходами идёт через `shaders/look.frag` (из glyph-rice); `color` при 100 — эффект выключен. Живые обои рисует owe поверх — на них вид не действует.
 
 ### Переходы-сцены: `contagion` и `outline`
 
@@ -135,6 +137,5 @@ omarchy plugin add https://github.com/KamradSmeshnyavy/omarchy-customizer --enab
 
 ## Лицензия
 
-MIT. Основано на `omarchy.background` из [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David
-Heinemeier Hansson). Переходы `contagion` / `outline` — по мотивам
-[pocket-dots](https://github.com/diegoMalagrida/pocket-dots) (GPL-3.0); код оттуда не брался.
+GPL-3.0 (см. [LICENSE](LICENSE); прежние версии — MIT). Авторы заимствований — в [NOTICE](NOTICE). Основано на `omarchy.background` из [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David
+Heinemeier Hansson); части glyph — из [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice) (GPL-3.0).

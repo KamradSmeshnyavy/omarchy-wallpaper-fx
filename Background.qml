@@ -111,7 +111,7 @@ Item {
   property var fxCursor: null
   readonly property var fxEffects: ["slant", "fade", "wipe", "wave", "grow", "outer", "diamond", "clock",
     "blinds", "doors", "mosaic", "dissolve", "pixelize", "ripple", "swirl", "crosszoom", "slide", "zoom",
-    "glitch", "burn", "waterdrop", "hexagon", "hexreveal", "contagion"]
+    "glitch", "burn", "waterdrop", "hexagon", "hexreveal", "dotwave", "contagion"]
 
   function fxEasingType(name) {
     var map = {
@@ -160,6 +160,31 @@ Item {
       }
     }
     onLoadFailed: root.fxConfig = ({})
+  }
+
+  // look: вид обоев из ~/.config/omarchy/wallpaper-look.json (пишет picker в стиле glyph, см. image-picker/glyph):
+  //   look  color (как есть) | mono (серое фото в тон темы) | dots (матрица точек-светодиодов) — glyph-rice
+  //   pitch шаг точек, px; bright 10…100 — от фона до картинки. color при bright 100 — без эффекта.
+  //   Живые обои (видео) рисует owe поверх — на них вид не действует.
+  property var lookConfig: ({})
+  readonly property int lookMode: ({ "dots": 0, "mono": 1 })[String(lookConfig.look)] ?? 2
+  readonly property real lookPitch: Math.max(4, Math.min(32, Number(lookConfig.pitch) || 10))
+  readonly property real lookBright: Math.max(0.1, Math.min(1, (Number(lookConfig.bright) || 100) / 100))
+  readonly property bool lookOn: lookMode < 2 || lookBright < 1
+  FileView {
+    path: root.home + "/.config/omarchy/wallpaper-look.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try {
+        var v = JSON.parse(text())
+        root.lookConfig = v && typeof v === "object" ? v : ({})
+      } catch (e) {
+        console.warn("wallpaper-look.json: " + e)
+      }
+    }
+    onLoadFailed: root.lookConfig = ({})
   }
 
   // Ответ почти мгновенный: карта персонажа из кэша, иначе карта линий картинки (меньше секунды),
@@ -457,118 +482,138 @@ Item {
       WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
       exclusionMode: ExclusionMode.Ignore
 
-      Image {
-        id: base
-        anchors.fill: parent
-        source: root.imageUrl(root.displayedBackground)
-        fillMode: Image.PreserveAspectCrop
-        asynchronous: true
-        cache: true
-        onStatusChanged: {
-          if (status === Image.Ready && root.finishingTransition) {
-            root.incomingBackground = ""
-            root.oldBackground = ""
-            root.finishingTransition = false
-          }
-        }
-      }
-
-      Image {
-        id: oldFrame
-        anchors.fill: parent
-        source: root.imageUrl(root.oldBackground)
-        fillMode: Image.PreserveAspectCrop
-        asynchronous: true
-        cache: false
-        smooth: true
-        mipmap: true
-        visible: root.oldBackground !== "" && root.revealProgress < 1
-        onStatusChanged: panel.maybeStartReveal()
-      }
-
+      // look: всё, что рисует обои (и переход), — одним слоем через шейдер вида (shaders/look.frag).
       Item {
-        id: incomingLayer
+        id: scene
         anchors.fill: parent
-        visible: root.incomingBackground !== "" && incomingFrame.status === Image.Ready && (root.revealProgress >= 1 || panel.maskReady)
-        // fx: маску-шторку заменил TransitionEffect ниже (slant рисует шейдер).
-        layer.enabled: false
-        layer.smooth: true
-        layer.effect: MultiEffect {
-          maskEnabled: true
-          maskSource: revealMask
-          maskThresholdMin: 0.5
-          maskSpreadAtMin: 0.02
+        layer.enabled: root.lookOn
+        layer.effect: ShaderEffect {
+          readonly property size size: Qt.size(scene.width, scene.height)
+          readonly property color lo: Commons.Color.background.hslLightness > 0.5 ? Commons.Color.foreground : Commons.Color.background
+          readonly property color hi: Commons.Color.background.hslLightness > 0.5 ? Commons.Color.background : Commons.Color.foreground
+          readonly property color bg: Commons.Color.background
+          readonly property real pitch: root.lookPitch
+          readonly property real bright: root.lookBright
+          property real dots: root.lookMode === 0 ? 1 : 0
+          property real mono: root.lookMode < 2 ? 1 : 0
+          Behavior on dots { NumberAnimation { duration: 700; easing.type: Easing.OutQuart } }
+          Behavior on mono { NumberAnimation { duration: 700 } }
+          fragmentShader: Qt.resolvedUrl("shaders/look.frag.qsb")
         }
 
         Image {
-          id: incomingFrame
+          id: base
           anchors.fill: parent
-          source: root.imageUrl(root.incomingBackground)
+          source: root.imageUrl(root.displayedBackground)
+          fillMode: Image.PreserveAspectCrop
+          asynchronous: true
+          cache: true
+          onStatusChanged: {
+            if (status === Image.Ready && root.finishingTransition) {
+              root.incomingBackground = ""
+              root.oldBackground = ""
+              root.finishingTransition = false
+            }
+          }
+        }
+
+        Image {
+          id: oldFrame
+          anchors.fill: parent
+          source: root.imageUrl(root.oldBackground)
           fillMode: Image.PreserveAspectCrop
           asynchronous: true
           cache: false
           smooth: true
           mipmap: true
+          visible: root.oldBackground !== "" && root.revealProgress < 1
           onStatusChanged: panel.maybeStartReveal()
         }
-      }
 
-      Item {
-        id: revealMask
-        anchors.fill: parent
-        visible: false
-        layer.enabled: true
-
-        readonly property real slant: -0.18
-        readonly property real centerTop: width / 2 - slant * height / 2
-        readonly property real centerBottom: width / 2 + slant * height / 2
-        readonly property real reach: width / 2 + Math.abs(slant) * height / 2 + 4
-        readonly property real spread: reach * root.revealProgress
-
-        Shape {
+        Item {
+          id: incomingLayer
           anchors.fill: parent
-          antialiasing: true
-          preferredRendererType: Shape.CurveRenderer
-          ShapePath {
-            fillColor: "white"
-            strokeColor: "transparent"
-            startX: revealMask.centerTop - revealMask.spread; startY: 0
-            PathLine { x: revealMask.centerTop + revealMask.spread; y: 0 }
-            PathLine { x: revealMask.centerBottom + revealMask.spread; y: revealMask.height }
-            PathLine { x: revealMask.centerBottom - revealMask.spread; y: revealMask.height }
-            PathLine { x: revealMask.centerTop - revealMask.spread; y: 0 }
+          visible: root.incomingBackground !== "" && incomingFrame.status === Image.Ready && (root.revealProgress >= 1 || panel.maskReady)
+          // fx: маску-шторку заменил TransitionEffect ниже (slant рисует шейдер).
+          layer.enabled: false
+          layer.smooth: true
+          layer.effect: MultiEffect {
+            maskEnabled: true
+            maskSource: revealMask
+            maskThresholdMin: 0.5
+            maskSpreadAtMin: 0.02
+          }
+
+          Image {
+            id: incomingFrame
+            anchors.fill: parent
+            source: root.imageUrl(root.incomingBackground)
+            fillMode: Image.PreserveAspectCrop
+            asynchronous: true
+            cache: false
+            smooth: true
+            mipmap: true
+            onStatusChanged: panel.maybeStartReveal()
           }
         }
-      }
 
-      // fx: переход — шейдер поверх старого и нового кадра.
-      TransitionEffect {
-        id: fxView
-        anchors.fill: parent
-        visible: root.incomingBackground !== "" && panel.maskReady && root.revealProgress < 1
-          && incomingFrame.status === Image.Ready
-        fromItem: oldFrame
-        toItem: incomingFrame
-        progress: root.revealProgress
-        effect: root.fxActive
-        angleDegrees: root.fxAngle
-        softness: root.fxSoftness
-        seed: root.fxSeed
-        cell: root.fxCell
-        glow: root.fxGlow
-        lineW: root.fxLineWidth
-        fieldPath: root.fxOutline ? root.outlineField : ""
-        growPath: root.fxOutline ? root.outlineGrow : ""
-        mapType: root.outlineKind
-        onMapReadyChanged: panel.maybeStartReveal()
-        onMapFailedChanged: panel.maybeStartReveal()
-        origin: {
-          if (root.fxOrigin === "random") return root.fxRandomOrigin
-          var c = root.fxCursor
-          var sc = panel.modelData
-          if (root.fxOrigin === "cursor" && c && sc && sc.width > 0)
-            return Qt.point(Math.max(0, Math.min(1, (c.x - sc.x) / sc.width)), Math.max(0, Math.min(1, (c.y - sc.y) / sc.height)))
-          return Qt.point(0.5, 0.5)
+        Item {
+          id: revealMask
+          anchors.fill: parent
+          visible: false
+          layer.enabled: true
+
+          readonly property real slant: -0.18
+          readonly property real centerTop: width / 2 - slant * height / 2
+          readonly property real centerBottom: width / 2 + slant * height / 2
+          readonly property real reach: width / 2 + Math.abs(slant) * height / 2 + 4
+          readonly property real spread: reach * root.revealProgress
+
+          Shape {
+            anchors.fill: parent
+            antialiasing: true
+            preferredRendererType: Shape.CurveRenderer
+            ShapePath {
+              fillColor: "white"
+              strokeColor: "transparent"
+              startX: revealMask.centerTop - revealMask.spread; startY: 0
+              PathLine { x: revealMask.centerTop + revealMask.spread; y: 0 }
+              PathLine { x: revealMask.centerBottom + revealMask.spread; y: revealMask.height }
+              PathLine { x: revealMask.centerBottom - revealMask.spread; y: revealMask.height }
+              PathLine { x: revealMask.centerTop - revealMask.spread; y: 0 }
+            }
+          }
+        }
+
+        // fx: переход — шейдер поверх старого и нового кадра.
+        TransitionEffect {
+          id: fxView
+          anchors.fill: parent
+          visible: root.incomingBackground !== "" && panel.maskReady && root.revealProgress < 1
+            && incomingFrame.status === Image.Ready
+          fromItem: oldFrame
+          toItem: incomingFrame
+          progress: root.revealProgress
+          effect: root.fxActive
+          angleDegrees: root.fxAngle
+          softness: root.fxSoftness
+          seed: root.fxSeed
+          cell: root.fxCell
+          glow: root.fxGlow
+          lineW: root.fxLineWidth
+          fieldPath: root.fxOutline ? root.outlineField : ""
+          growPath: root.fxOutline ? root.outlineGrow : ""
+          mapType: root.outlineKind
+          onMapReadyChanged: panel.maybeStartReveal()
+          onMapFailedChanged: panel.maybeStartReveal()
+          origin: {
+            if (root.fxOrigin === "random") return root.fxRandomOrigin
+            var c = root.fxCursor
+            var sc = panel.modelData
+            if (root.fxOrigin === "cursor" && c && sc && sc.width > 0)
+              return Qt.point(Math.max(0, Math.min(1, (c.x - sc.x) / sc.width)), Math.max(0, Math.min(1, (c.y - sc.y) / sc.height)))
+            return Qt.point(0.5, 0.5)
+          }
         }
       }
 

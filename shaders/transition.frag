@@ -225,6 +225,27 @@ vec4 hexreveal(vec2 uv) {
     return vec4(mix(a.rgb, nb, cover), 1.0);
 }
 
+// dotwave (из glyph-rice, components/shaders/wall.frag, GPL-3.0): волна от origin, клетка решает целиком — перед
+// фронтом старые обои, за ним новые. На гребне клетка — точка-светодиод: вспухает и светлеет, картинка рассыпается
+// в матрицу и собирается уже новой. Шаг точек — cell × 1.6 (cell 6 → 9.6 px), фон между точками — inkDark.
+vec4 dotwave(vec2 uv) {
+    vec2 sz = vec2(sw, sh);
+    vec2 p = uv * sz;
+    float pitch = max(cell * 1.6, 5.0);
+    vec2 c = (floor(p / pitch) + 0.5) * pitch;
+    vec2 o = origin * sz;
+    float band = pitch * 14.0;
+    float far = length(max(o, sz - o)) + band;
+    float k = clamp((progress * far - distance(c, o)) / band, 0.0, 1.0);
+    float crest = 1.0 - abs(2.0 * k - 1.0);
+    vec2 q = mix(p, c, crest) / sz;
+    vec3 rgb = k > 0.5 ? B(q).rgb : A(q).rgb;
+    rgb = mix(rgb, ink.rgb, 0.4 * glow * crest);
+    float r = pitch * mix(0.75, 0.3, crest) * (1.0 + 0.55 * crest);
+    float m = 1.0 - smoothstep(r - 0.6, r + 0.6, distance(p, c));
+    return vec4(mix(inkDark.rgb, rgb, m), 1.0);
+}
+
 void main() {
     vec2 uv = qt_TexCoord0;
     float p = progress;
@@ -339,6 +360,8 @@ void main() {
         c = mix(A(uv), B(uv), step(order, p * 1.02));
     } else if (m == 25) {    // hexreveal — соты раскрываются каждая из своей середины волной от origin (Vitreus)
         c = hexreveal(uv);
+    } else if (m == 26) {    // dotwave — волна точек (glyph-rice)
+        c = dotwave(uv);
     } else if (m == 23) {    // contagion — колонии клетками прогрызают старые обои
         c = vec4(contagion(uv), 1.0);
     } else if (m == 24) {    // outline — контур персонажа, заливка, мир растёт из него

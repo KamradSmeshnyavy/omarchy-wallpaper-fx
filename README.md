@@ -12,7 +12,9 @@ transition between wallpapers is new.
 
 `slant` (stock), `fade`, `wipe`, `wave`, `grow`, `outer`, `diamond`, `clock`, `blinds`, `doors`, `mosaic`,
 `dissolve`, `pixelize`, `ripple`, `swirl`, `crosszoom`, `slide`, `zoom`, `glitch`, `burn`, `waterdrop`,
-`hexagon`, `hexreveal`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Own implementations of ideas from swww and gl-transitions; `hexreveal` (honeycomb cells each opening from their own middle in a wave from `origin`, with a lit rim) is ported from Vitreus' `wptrans/hexreveal.wgsl` (MIT, © natepayn3).
+`hexagon`, `hexreveal`, `contagion`, `outline`, `outline-cut`, `random`, `none`. Own implementations of ideas from swww and gl-transitions; `hexreveal` (honeycomb cells each opening from their own middle in a wave from `origin`, with a lit rim) is ported from Vitreus' `wptrans/hexreveal.wgsl` (MIT, © natepayn3); `dotwave` (a wave from `origin`: on the crest the picture scatters into LED dots and reassembles as the new one; dot step — `cell` × 1.6) is taken from glyph-rice's `wall.frag` (GPL-3.0).
+
+**Wallpaper look** — `~/.config/omarchy/wallpaper-look.json` (written by the image picker's `glyph` style): `look` — `color` | `mono` (grey photo in the theme's tones) | `dots` (LED dot matrix), `pitch` — dot step in px (4–32), `bright` — 10–100, from the background colour to the picture. The whole wallpaper layer, transitions included, goes through `shaders/look.frag` (from glyph-rice); `color` at 100 turns it off. Live wallpapers are drawn by owe on top and are not affected.
 
 ### Scene transitions: `contagion` and `outline`
 
@@ -137,6 +139,5 @@ omarchy plugin add https://github.com/KamradSmeshnyavy/omarchy-customizer --enab
 
 ## License
 
-MIT. Based on `omarchy.background` from [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David
-Heinemeier Hansson). The `contagion` / `outline` transitions are inspired by
-[pocket-dots](https://github.com/diegoMalagrida/pocket-dots) (GPL-3.0); no code was taken from it.
+GPL-3.0 (see [LICENSE](LICENSE); earlier versions were MIT). Credits — in [NOTICE](NOTICE). Based on `omarchy.background` from [Omarchy](https://github.com/basecamp/omarchy) (MIT, © David
+Heinemeier Hansson); the glyph parts come from [glyph-rice](https://github.com/Nebelung-cloud/glyph-rice) (GPL-3.0).

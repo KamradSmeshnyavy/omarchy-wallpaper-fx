@@ -1,0 +1,23 @@
+Omarchy Wallpaper FX
+Copyright (c) 2026 KamradSmeshnyavy
+
+Licensed under the GNU General Public License v3.0 (see LICENSE). Versions before the dotwave transition
+and the wallpaper look were released under the MIT License.
+
+This project includes or is based on:
+
+- Omarchy — https://github.com/basecamp/omarchy
+  MIT License, Copyright (c) David Heinemeier Hansson.
+  A clone of the stock omarchy.background plugin.
+
+- glyph-rice — https://github.com/Nebelung-cloud/glyph-rice
+  GPL-3.0, Copyright (c) Nebelung-cloud.
+  The dotwave transition (dotwave() in shaders/transition.frag) and the wallpaper look
+  (shaders/look.frag) are taken from components/shaders/wall.frag.
+
+- Vitreus — https://github.com/natepayn3/Vitreus
+  MIT License, Copyright (c) natepayn3.
+  The hexreveal transition is ported from wptrans/hexreveal.wgsl.
+
+- pocket-dots — https://github.com/diegoMalagrida/pocket-dots
+  GPL-3.0. The contagion / outline transitions are inspired by it; no code was taken.
