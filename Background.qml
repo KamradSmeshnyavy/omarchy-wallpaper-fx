@@ -1,5 +1,6 @@
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 import Quickshell.Wayland
 import QtQuick
 import QtQuick.Effects
@@ -160,6 +161,32 @@ Item {
       }
     }
     onLoadFailed: root.fxConfig = ({})
+  }
+
+  // scene: живые обои-сцена. Рядом с картинкой лежит <имя>.scene.json — тогда поверх неё рисуется сцена
+  // (SceneTerrain.qml — «Земля» райса Space: пейзаж панорамирует при смене стола). Картинка остаётся снимком той же
+  // сцены (scripts/scene-shot.qml) — для пикера, лока и переходов. {"scene": "terrain", "seed", "land", "colors"}.
+  property var sceneConfig: null
+  function sceneSidecar(path) {
+    var p = String(path || "")
+    return /\.(png|jpe?g|webp)$/i.test(p) ? p.replace(/\.[^.\/]+$/, ".scene.json") : ""
+  }
+  FileView {
+    path: root.sceneSidecar(root.displayedBackground)
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try {
+        var v = JSON.parse(text())
+        root.sceneConfig = v && v.scene === "terrain" ? v : null
+      } catch (e) {
+        console.warn("scene.json: " + e)
+        root.sceneConfig = null
+      }
+    }
+    onLoadFailed: root.sceneConfig = null
+    onPathChanged: if (!path) root.sceneConfig = null
   }
 
   // look: вид обоев из ~/.config/omarchy/wallpaper-look.json (пишет picker в стиле glyph, см. image-picker/glyph):
@@ -517,6 +544,20 @@ Item {
               root.finishingTransition = false
             }
           }
+        }
+
+        // scene: живая сцена поверх снимка; во время перехода — снимки (картинки)
+        SceneTerrain {
+          id: sceneView
+          anchors.fill: parent
+          visible: root.sceneConfig !== null && root.revealProgress >= 1 && root.incomingBackground === ""
+          config: root.sceneConfig || ({})
+          workspace: Hyprland.monitorFor(panel.modelData)?.activeWorkspace?.id ?? 1
+          screenX: panel.modelData ? panel.modelData.x : 0
+          themeBg: Commons.Color.background
+          themeAccent: Commons.Color.accent
+          themeFg: Commons.Color.foreground
+          themeTone: Qt.rgba(Commons.Color.accent.r * 0.35 + 0.08, Commons.Color.accent.g * 0.35 + 0.12, Commons.Color.accent.b * 0.35 + 0.2, 1)
         }
 
         Image {

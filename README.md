@@ -16,6 +16,13 @@ transition between wallpapers is new.
 
 **Wallpaper look** — `~/.config/omarchy/wallpaper-look.json` (written by the image picker's `glyph` style): `look` — `color` | `mono` (grey photo in the theme's tones) | `dots` (LED dot matrix), `pitch` — dot step in px (4–32), `bright` — 10–100, from the background colour to the picture. The whole wallpaper layer, transitions included, goes through `shaders/look.frag` (from glyph-rice); `color` at 100 turns it off. Live wallpapers are drawn by owe on top and are not affected.
 
+**Scene wallpapers** — when a picture has a sidecar `<name>.scene.json` (`{"scene": "terrain", "seed", "workspace", "land", "colors"}`), a live scene is drawn over it: `terrain` is the landscape shader of the Space style from [elifouts/Dotfiles](https://github.com/elifouts/Dotfiles) (`SceneTerrain.qml`, `shaders/terrain.frag` + `shaders/terrain/*.glsl`, GPL-3.0). It pans when you switch workspaces, and its colours come from the file or the current theme. The picture itself is a still of the same scene (made by `scripts/scene-shot.qml`), so the picker, the lock screen and transitions keep working with it. The `space-*` themes of [omarchy-rices](https://github.com/KamradSmeshnyavy/omarchy-rices) ship such pairs. A still without a window:
+
+```sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl QT_SCALE_FACTOR=1 \
+  /usr/lib/qt6/bin/qml scripts/scene-shot.qml -- "$(command cat x.scene.json)" out.png 2880 1800
+```
+
 ### Scene transitions: `contagion` and `outline`
 
 Two slower effects (`durationScene`, 1.9 s by default) after the transitions of
@@ -121,6 +128,8 @@ editing, rebuild the compiled shader (both files are committed):
 /usr/lib/qt6/bin/qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -O \
   -o shaders/transition.frag.qsb shaders/transition.frag
 ```
+
+The scene shader is built the same way: `-o shaders/terrain.frag.qsb shaders/terrain.frag` (it includes `shaders/terrain/*.glsl`).
 
 Changes against the stock `Background.qml` are marked `// fx:`.
 

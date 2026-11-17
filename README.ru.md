@@ -15,6 +15,13 @@
 
 **Вид обоев** — `~/.config/omarchy/wallpaper-look.json` (пишет стиль `glyph` в image picker): `look` — `color` | `mono` (серое фото в тонах темы) | `dots` (матрица точек-светодиодов), `pitch` — шаг точек, px (4–32), `bright` — 10–100, от цвета фона до картинки. Весь слой обоев вместе с переходами идёт через `shaders/look.frag` (из glyph-rice); `color` при 100 — эффект выключен. Живые обои рисует owe поверх — на них вид не действует.
 
+**Обои-сцены** — если рядом с картинкой лежит `<имя>.scene.json` (`{"scene": "terrain", "seed", "workspace", "land", "colors"}`), поверх неё рисуется живая сцена: `terrain` — шейдер пейзажа стиля Space из [elifouts/Dotfiles](https://github.com/elifouts/Dotfiles) (`SceneTerrain.qml`, `shaders/terrain.frag` + `shaders/terrain/*.glsl`, GPL-3.0). При смене стола пейзаж панорамирует, цвета — из файла или текущей темы. Сама картинка — снимок той же сцены (`scripts/scene-shot.qml`), поэтому пикер, экран блокировки и переходы работают с ней как обычно. Такие пары кладут темы `space-*` из [omarchy-rices](https://github.com/KamradSmeshnyavy/omarchy-rices). Снимок без окна:
+
+```sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl QT_SCALE_FACTOR=1 \
+  /usr/lib/qt6/bin/qml scripts/scene-shot.qml -- "$(command cat x.scene.json)" out.png 2880 1800
+```
+
 ### Переходы-сцены: `contagion` и `outline`
 
 Два неторопливых эффекта (`durationScene`, по умолчанию 1,9 с) по мотивам переходов
@@ -119,6 +126,8 @@ omarchy restart shell
 /usr/lib/qt6/bin/qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -O \
   -o shaders/transition.frag.qsb shaders/transition.frag
 ```
+
+Шейдер сцены собирается так же: `-o shaders/terrain.frag.qsb shaders/terrain.frag` (он подключает `shaders/terrain/*.glsl`).
 
 Правки стокового `Background.qml` помечены `// fx:`.
 

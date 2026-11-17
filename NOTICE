@@ -21,3 +21,8 @@ This project includes or is based on:
 
 - pocket-dots — https://github.com/diegoMalagrida/pocket-dots
   GPL-3.0. The contagion / outline transitions are inspired by it; no code was taken.
+
+- elifouts/Dotfiles — https://github.com/elifouts/Dotfiles
+  GPL-3.0, Copyright (c) Eli Fouts.
+  The terrain scene: shaders/terrain.frag and shaders/terrain/*.glsl are copied from
+  .config/hypr/quickshell/Space/wallpaper; SceneTerrain.qml re-does its Terrain.qml.
