@@ -167,6 +167,22 @@ Item {
   // (SceneTerrain.qml — «Земля» райса Space: пейзаж панорамирует при смене стола). Картинка остаётся снимком той же
   // сцены (scripts/scene-shot.qml) — для пикера, лока и переходов. {"scene": "terrain", "seed", "land", "colors"}.
   property var sceneConfig: null
+  // dynamic-тема (omarchy-rice-dynamic) перекрашивается под обои — тогда цвета сцены из темы, а не из файла
+  property bool themeDynamic: false
+  FileView {
+    path: root.stateHome + "/omarchy/current/theme.name"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.themeDynamic = /^dynamic/.test(String(text()).trim())
+    onLoadFailed: root.themeDynamic = false
+  }
+  function sceneFor(cfg) {
+    if (!cfg || !root.themeDynamic) return cfg || ({})
+    var c = Object.assign({}, cfg)
+    delete c.colors
+    return c
+  }
   function sceneSidecar(path) {
     var p = String(path || "")
     return /\.(png|jpe?g|webp)$/i.test(p) ? p.replace(/\.[^.\/]+$/, ".scene.json") : ""
@@ -551,7 +567,7 @@ Item {
           id: sceneView
           anchors.fill: parent
           visible: root.sceneConfig !== null && root.revealProgress >= 1 && root.incomingBackground === ""
-          config: root.sceneConfig || ({})
+          config: root.sceneFor(root.sceneConfig)
           workspace: Hyprland.monitorFor(panel.modelData)?.activeWorkspace?.id ?? 1
           screenX: panel.modelData ? panel.modelData.x : 0
           themeBg: Commons.Color.background
