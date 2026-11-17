@@ -272,6 +272,8 @@ Item {
     fromPath = String(fromPath || "").trim()
     if (!path || (!force && finalPath === currentBackground)) return
     currentBackground = finalPath
+    // fx: динамическая тема райса (omarchy-rice-dynamic) перекрашивается под новые обои; не dynamic-* — ничего не делает.
+    Quickshell.execDetached(["sh", "-c", "command -v omarchy-rice-dynamic >/dev/null && exec omarchy-rice-dynamic on-wallpaper \"$1\"", "sh", finalPath])
     backgroundVersion += 1
     revealStartedVersion = -1
 
